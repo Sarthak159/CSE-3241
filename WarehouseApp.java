@@ -333,13 +333,13 @@ public class WarehouseApp {
         String carId = readLine(in, "Driverless car identifier: ");
 
         System.out.println("Robot delivered (stub). Robot " + robotId +
-                " scheduled for delivery to " + address +
+                " scheduled for delivery to customer " + customerId + " at " + address +
                 " at " + deliveryDate + " using car " + carId + ".");
     }
 
     private static void pickupRobotStub(Scanner in) {
         System.out.println("\n--- Pickup of Robots (Prompt Only) ---");
-        int customerId = readInt(in, "Customer ID: ");
+        readInt(in, "Customer ID: ");
         int robotId = readInt(in, "Robot ID to pick up: ");
         String address = readLine(in, "Pickup address: ");
         String pickupDate = readLine(in, "Pickup date/time: ");
@@ -372,7 +372,7 @@ public class WarehouseApp {
     // ---------------- ENTITY CLASSES ----------------
 
     static class Customer {
-        private int customerId;
+        private final int customerId;
         private String name;
         private String phone;
 
@@ -393,11 +393,7 @@ public class WarehouseApp {
         void setName(String name) {
             this.name = name;
         }
-
-        String getPhone() {
-            return phone;
-        }
-
+                
         void setPhone(String phone) {
             this.phone = phone;
         }
@@ -409,7 +405,7 @@ public class WarehouseApp {
     }
 
     static class Robot {
-        private int robotId;
+        private final int robotId;
         private String model;
         private String status;
 
@@ -429,10 +425,6 @@ public class WarehouseApp {
 
         void setModel(String model) {
             this.model = model;
-        }
-
-        String getStatus() {
-            return status;
         }
 
         void setStatus(String status) {
