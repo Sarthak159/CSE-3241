@@ -1,13 +1,27 @@
-import java.util.ArrayList;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.sql.Types;
 import java.util.Scanner;
 
 public class WarehouseApp {
 
-    // In-memory "tables"
-    private static final ArrayList<Customer> customers = new ArrayList<>();
-    private static final ArrayList<Robot> robots = new ArrayList<>();
+    private static final String SQLITE_DRIVER = "org.sqlite.JDBC";
 
     public static void main(String[] args) {
+        try {
+            initializeDatabase();
+            System.out.println("Connected to SQLite database successfully: " + getDatabasePath());
+        } catch (SQLException e) {
+            System.out.println("Unable to initialize database: " + e.getMessage());
+            return;
+        }
+
         try (Scanner in = new Scanner(System.in)) {
             boolean running = true;
             while (running) {
@@ -17,10 +31,10 @@ public class WarehouseApp {
                 switch (choice) {
                     case 1 -> customerMenu(in);
                     case 2 -> robotMenu(in);
-                    case 3 -> rentRobotStub(in);
-                    case 4 -> returnEquipmentStub(in);
-                    case 5 -> deliverRobotStub(in);
-                    case 6 -> pickupRobotStub(in);
+                    case 3 -> rentRobot(in);
+                    case 4 -> returnEquipment(in);
+                    case 5 -> deliverRobot(in);
+                    case 6 -> pickupRobot(in);
                     case 7 -> {
                         running = false;
                         System.out.println("Exiting program. Goodbye.");
@@ -31,16 +45,109 @@ public class WarehouseApp {
         }
     }
 
+    private static void initializeDatabase() throws SQLException {
+        try {
+            Class.forName(SQLITE_DRIVER);
+        } catch (ClassNotFoundException e) {
+            throw new SQLException(
+                    "SQLite JDBC driver not found. Run the app with the sqlite-jdbc jar on the classpath.",
+                    e
+            );
+        }
+
+        try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
+            stmt.executeUpdate(
+                    "CREATE TABLE IF NOT EXISTS CUSTOMER (" +
+                            "customer_id INTEGER PRIMARY KEY, " +
+                            "name TEXT NOT NULL, " +
+                            "phone TEXT NOT NULL" +
+                            ")"
+            );
+            stmt.executeUpdate(
+                    "CREATE TABLE IF NOT EXISTS ROBOT (" +
+                            "robot_id INTEGER PRIMARY KEY, " +
+                            "model TEXT NOT NULL, " +
+                            "status TEXT NOT NULL" +
+                            ")"
+            );
+            stmt.executeUpdate(
+                    "CREATE TABLE IF NOT EXISTS RENTAL (" +
+                            "rental_id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+                            "customer_id INTEGER NOT NULL, " +
+                            "robot_id INTEGER NOT NULL, " +
+                            "rental_date TEXT NOT NULL, " +
+                            "expected_return_date TEXT, " +
+                            "FOREIGN KEY (customer_id) REFERENCES CUSTOMER(customer_id), " +
+                            "FOREIGN KEY (robot_id) REFERENCES ROBOT(robot_id)" +
+                            ")"
+            );
+            stmt.executeUpdate(
+                    "CREATE TABLE IF NOT EXISTS EQUIPMENT_RETURN (" +
+                            "return_id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+                            "rental_id INTEGER NOT NULL, " +
+                            "customer_id INTEGER NOT NULL, " +
+                            "robot_id INTEGER NOT NULL, " +
+                            "return_date TEXT NOT NULL, " +
+                            "FOREIGN KEY (rental_id) REFERENCES RENTAL(rental_id), " +
+                            "FOREIGN KEY (customer_id) REFERENCES CUSTOMER(customer_id), " +
+                            "FOREIGN KEY (robot_id) REFERENCES ROBOT(robot_id)" +
+                            ")"
+            );
+            stmt.executeUpdate(
+                    "CREATE TABLE IF NOT EXISTS DELIVERY (" +
+                            "delivery_id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+                            "customer_id INTEGER NOT NULL, " +
+                            "robot_id INTEGER, " +
+                            "rental_id INTEGER, " +
+                            "driverless_car_id TEXT NOT NULL, " +
+                            "delivery_date TEXT NOT NULL, " +
+                            "destination TEXT NOT NULL, " +
+                            "CHECK (robot_id IS NOT NULL OR rental_id IS NOT NULL), " +
+                            "FOREIGN KEY (customer_id) REFERENCES CUSTOMER(customer_id), " +
+                            "FOREIGN KEY (robot_id) REFERENCES ROBOT(robot_id), " +
+                            "FOREIGN KEY (rental_id) REFERENCES RENTAL(rental_id)" +
+                            ")"
+            );
+            stmt.executeUpdate(
+                    "CREATE TABLE IF NOT EXISTS PICKUP (" +
+                            "pickup_id INTEGER PRIMARY KEY AUTOINCREMENT, " +
+                            "customer_id INTEGER NOT NULL, " +
+                            "robot_id INTEGER, " +
+                            "rental_id INTEGER, " +
+                            "driverless_car_id TEXT NOT NULL, " +
+                            "pickup_date TEXT NOT NULL, " +
+                            "pickup_address TEXT NOT NULL, " +
+                            "CHECK (robot_id IS NOT NULL OR rental_id IS NOT NULL), " +
+                            "FOREIGN KEY (customer_id) REFERENCES CUSTOMER(customer_id), " +
+                            "FOREIGN KEY (robot_id) REFERENCES ROBOT(robot_id), " +
+                            "FOREIGN KEY (rental_id) REFERENCES RENTAL(rental_id)" +
+                            ")"
+            );
+        }
+    }
+
+    private static Connection getConnection() throws SQLException {
+        Connection conn = DriverManager.getConnection("jdbc:sqlite:" + getDatabasePath());
+        try (Statement stmt = conn.createStatement()) {
+            stmt.execute("PRAGMA foreign_keys = ON");
+        }
+        return conn;
+    }
+
+    private static Path getDatabasePath() {
+        return Paths.get("Warehouse.db").toAbsolutePath().normalize();
+    }
+
     // ---------------- MAIN MENU ----------------
 
     private static void printMainMenu() {
         System.out.println("\n=== Warehouse Robot Management System ===");
         System.out.println("1) Manage Customers");
         System.out.println("2) Manage Robots");
-        System.out.println("3) Rent Robots (prompt only)");
-        System.out.println("4) Return Equipment (prompt only)");
-        System.out.println("5) Delivery of Robots (prompt only)");
-        System.out.println("6) Pickup of Robots (prompt only)");
+        System.out.println("3) Rent Robots");
+        System.out.println("4) Return Equipment");
+        System.out.println("5) Delivery of Robots");
+        System.out.println("6) Pickup of Robots");
         System.out.println("7) Exit");
     }
 
@@ -73,50 +180,86 @@ public class WarehouseApp {
 
     private static void addCustomer(Scanner in) {
         int id = readInt(in, "Customer ID: ");
-        if (findCustomerById(id) != null) {
-            System.out.println("A customer with that ID already exists.");
-            return;
-        }
-
         String name = readLine(in, "Name: ");
         String phone = readLine(in, "Phone: ");
 
-        customers.add(new Customer(id, name, phone));
-        System.out.println("Customer added.");
+        try {
+            if (findCustomerById(id) != null) {
+                System.out.println("A customer with that ID already exists.");
+                return;
+            }
+
+            try (Connection conn = getConnection();
+                 PreparedStatement stmt = conn.prepareStatement(
+                         "INSERT INTO CUSTOMER (customer_id, name, phone) VALUES (?, ?, ?)"
+                 )) {
+                stmt.setInt(1, id);
+                stmt.setString(2, name);
+                stmt.setString(3, phone);
+                stmt.executeUpdate();
+            }
+
+            System.out.println("Customer added.");
+        } catch (SQLException e) {
+            printDatabaseError("add customer", e);
+        }
     }
 
     private static void editCustomer(Scanner in) {
         int id = readInt(in, "Enter Customer ID to edit: ");
-        Customer c = findCustomerById(id);
-        if (c == null) {
-            System.out.println("Customer not found.");
-            return;
-        }
 
-        System.out.println("Editing customer: " + c);
-        String newName = readLine(in, "New name (leave blank to keep current): ");
-        String newPhone = readLine(in, "New phone (leave blank to keep current): ");
+        try {
+            Customer customer = findCustomerById(id);
+            if (customer == null) {
+                System.out.println("Customer not found.");
+                return;
+            }
 
-        if (!newName.trim().isEmpty()) {
-            c.setName(newName);
-        }
-        if (!newPhone.trim().isEmpty()) {
-            c.setPhone(newPhone);
-        }
+            System.out.println("Editing customer: " + customer);
+            String newName = readLine(in, "New name (leave blank to keep current): ");
+            String newPhone = readLine(in, "New phone (leave blank to keep current): ");
 
-        System.out.println("Customer updated: " + c);
+            String updatedName = newName.trim().isEmpty() ? customer.getName() : newName;
+            String updatedPhone = newPhone.trim().isEmpty() ? customer.getPhone() : newPhone;
+
+            try (Connection conn = getConnection();
+                 PreparedStatement stmt = conn.prepareStatement(
+                         "UPDATE CUSTOMER SET name = ?, phone = ? WHERE customer_id = ?"
+                 )) {
+                stmt.setString(1, updatedName);
+                stmt.setString(2, updatedPhone);
+                stmt.setInt(3, id);
+                stmt.executeUpdate();
+            }
+
+            System.out.println("Customer updated: " + new Customer(id, updatedName, updatedPhone));
+        } catch (SQLException e) {
+            printDatabaseError("edit customer", e);
+        }
     }
 
     private static void deleteCustomer(Scanner in) {
         int id = readInt(in, "Enter Customer ID to delete: ");
-        Customer c = findCustomerById(id);
-        if (c == null) {
-            System.out.println("Customer not found.");
-            return;
-        }
 
-        customers.remove(c);
-        System.out.println("Customer deleted.");
+        try {
+            Customer customer = findCustomerById(id);
+            if (customer == null) {
+                System.out.println("Customer not found.");
+                return;
+            }
+
+            try (Connection conn = getConnection();
+                 PreparedStatement stmt = conn.prepareStatement(
+                         "DELETE FROM CUSTOMER WHERE customer_id = ?"
+                 )) {
+                stmt.setInt(1, id);
+                stmt.executeUpdate();
+            }
+
+            System.out.println("Customer deleted.");
+        } catch (SQLException e) {
+            printDatabaseError("delete customer", e);
+        }
     }
 
     private static void searchCustomer(Scanner in) {
@@ -128,24 +271,39 @@ public class WarehouseApp {
         switch (choice) {
             case 1 -> {
                 int id = readInt(in, "Customer ID: ");
-                Customer c = findCustomerById(id);
-                if (c == null) {
-                    System.out.println("No customer found.");
-                } else {
-                    System.out.println("Found: " + c);
+                try {
+                    Customer customer = findCustomerById(id);
+                    if (customer == null) {
+                        System.out.println("No customer found.");
+                    } else {
+                        System.out.println("Found: " + customer);
+                    }
+                } catch (SQLException e) {
+                    printDatabaseError("search customer", e);
                 }
             }
             case 2 -> {
-                String key = readLine(in, "Name keyword: ").toLowerCase();
-                boolean foundAny = false;
-                for (Customer c : customers) {
-                    if (c.getName().toLowerCase().contains(key)) {
-                        System.out.println("Found: " + c);
-                        foundAny = true;
+                String key = readLine(in, "Name keyword: ").trim().toLowerCase();
+                try (Connection conn = getConnection();
+                     PreparedStatement stmt = conn.prepareStatement(
+                             "SELECT customer_id, name, phone FROM CUSTOMER " +
+                                     "WHERE LOWER(name) LIKE ? ORDER BY customer_id"
+                     )) {
+                    stmt.setString(1, "%" + key + "%");
+
+                    boolean foundAny = false;
+                    try (ResultSet rs = stmt.executeQuery()) {
+                        while (rs.next()) {
+                            System.out.println("Found: " + mapCustomer(rs));
+                            foundAny = true;
+                        }
                     }
-                }
-                if (!foundAny) {
-                    System.out.println("No customers matched.");
+
+                    if (!foundAny) {
+                        System.out.println("No customers matched.");
+                    }
+                } catch (SQLException e) {
+                    printDatabaseError("search customer", e);
                 }
             }
             default -> System.out.println("Invalid choice.");
@@ -153,20 +311,43 @@ public class WarehouseApp {
     }
 
     private static void listCustomers() {
-        if (customers.isEmpty()) {
-            System.out.println("No customers in system.");
-            return;
-        }
-        System.out.println("\nCustomers:");
-        for (Customer c : customers) {
-            System.out.println(" - " + c);
+        try (Connection conn = getConnection();
+             PreparedStatement stmt = conn.prepareStatement(
+                     "SELECT customer_id, name, phone FROM CUSTOMER ORDER BY customer_id"
+             );
+             ResultSet rs = stmt.executeQuery()) {
+            boolean foundAny = false;
+            while (rs.next()) {
+                if (!foundAny) {
+                    System.out.println("\nCustomers:");
+                    foundAny = true;
+                }
+                System.out.println(" - " + mapCustomer(rs));
+            }
+
+            if (!foundAny) {
+                System.out.println("No customers in system.");
+            }
+        } catch (SQLException e) {
+            printDatabaseError("list customers", e);
         }
     }
 
-    private static Customer findCustomerById(int id) {
-        for (Customer c : customers) {
-            if (c.getCustomerId() == id) {
-                return c;
+    private static Customer findCustomerById(int id) throws SQLException {
+        try (Connection conn = getConnection()) {
+            return findCustomerById(conn, id);
+        }
+    }
+
+    private static Customer findCustomerById(Connection conn, int id) throws SQLException {
+        try (PreparedStatement stmt = conn.prepareStatement(
+                "SELECT customer_id, name, phone FROM CUSTOMER WHERE customer_id = ?"
+        )) {
+            stmt.setInt(1, id);
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    return mapCustomer(rs);
+                }
             }
         }
         return null;
@@ -201,50 +382,86 @@ public class WarehouseApp {
 
     private static void addRobot(Scanner in) {
         int id = readInt(in, "Robot ID: ");
-        if (findRobotById(id) != null) {
-            System.out.println("A robot with that ID already exists.");
-            return;
-        }
-
         String model = readLine(in, "Model: ");
-        String status = readLine(in, "Status (AVAILABLE/RENTED/MAINTENANCE): ").toUpperCase();
+        String status = readRobotStatus(in, "Status (AVAILABLE/RENTED/MAINTENANCE): ", false);
 
-        robots.add(new Robot(id, model, status));
-        System.out.println("Robot added.");
+        try {
+            if (findRobotById(id) != null) {
+                System.out.println("A robot with that ID already exists.");
+                return;
+            }
+
+            try (Connection conn = getConnection();
+                 PreparedStatement stmt = conn.prepareStatement(
+                         "INSERT INTO ROBOT (robot_id, model, status) VALUES (?, ?, ?)"
+                 )) {
+                stmt.setInt(1, id);
+                stmt.setString(2, model);
+                stmt.setString(3, status);
+                stmt.executeUpdate();
+            }
+
+            System.out.println("Robot added.");
+        } catch (SQLException e) {
+            printDatabaseError("add robot", e);
+        }
     }
 
     private static void editRobot(Scanner in) {
         int id = readInt(in, "Enter Robot ID to edit: ");
-        Robot r = findRobotById(id);
-        if (r == null) {
-            System.out.println("Robot not found.");
-            return;
-        }
 
-        System.out.println("Editing robot: " + r);
-        String newModel = readLine(in, "New model (leave blank to keep current): ");
-        String newStatus = readLine(in, "New status (leave blank to keep current): ").toUpperCase();
+        try {
+            Robot robot = findRobotById(id);
+            if (robot == null) {
+                System.out.println("Robot not found.");
+                return;
+            }
 
-        if (!newModel.trim().isEmpty()) {
-            r.setModel(newModel);
-        }
-        if (!newStatus.trim().isEmpty()) {
-            r.setStatus(newStatus);
-        }
+            System.out.println("Editing robot: " + robot);
+            String newModel = readLine(in, "New model (leave blank to keep current): ");
+            String newStatus = readRobotStatus(in, "New status (leave blank to keep current): ", true);
 
-        System.out.println("Robot updated: " + r);
+            String updatedModel = newModel.trim().isEmpty() ? robot.getModel() : newModel;
+            String updatedStatus = newStatus.trim().isEmpty() ? robot.getStatus() : newStatus;
+
+            try (Connection conn = getConnection();
+                 PreparedStatement stmt = conn.prepareStatement(
+                         "UPDATE ROBOT SET model = ?, status = ? WHERE robot_id = ?"
+                 )) {
+                stmt.setString(1, updatedModel);
+                stmt.setString(2, updatedStatus);
+                stmt.setInt(3, id);
+                stmt.executeUpdate();
+            }
+
+            System.out.println("Robot updated: " + new Robot(id, updatedModel, updatedStatus));
+        } catch (SQLException e) {
+            printDatabaseError("edit robot", e);
+        }
     }
 
     private static void deleteRobot(Scanner in) {
         int id = readInt(in, "Enter Robot ID to delete: ");
-        Robot r = findRobotById(id);
-        if (r == null) {
-            System.out.println("Robot not found.");
-            return;
-        }
 
-        robots.remove(r);
-        System.out.println("Robot deleted.");
+        try {
+            Robot robot = findRobotById(id);
+            if (robot == null) {
+                System.out.println("Robot not found.");
+                return;
+            }
+
+            try (Connection conn = getConnection();
+                 PreparedStatement stmt = conn.prepareStatement(
+                         "DELETE FROM ROBOT WHERE robot_id = ?"
+                 )) {
+                stmt.setInt(1, id);
+                stmt.executeUpdate();
+            }
+
+            System.out.println("Robot deleted.");
+        } catch (SQLException e) {
+            printDatabaseError("delete robot", e);
+        }
     }
 
     private static void searchRobot(Scanner in) {
@@ -256,24 +473,39 @@ public class WarehouseApp {
         switch (choice) {
             case 1 -> {
                 int id = readInt(in, "Robot ID: ");
-                Robot r = findRobotById(id);
-                if (r == null) {
-                    System.out.println("No robot found.");
-                } else {
-                    System.out.println("Found: " + r);
+                try {
+                    Robot robot = findRobotById(id);
+                    if (robot == null) {
+                        System.out.println("No robot found.");
+                    } else {
+                        System.out.println("Found: " + robot);
+                    }
+                } catch (SQLException e) {
+                    printDatabaseError("search robot", e);
                 }
             }
             case 2 -> {
-                String key = readLine(in, "Model keyword: ").toLowerCase();
-                boolean foundAny = false;
-                for (Robot r : robots) {
-                    if (r.getModel().toLowerCase().contains(key)) {
-                        System.out.println("Found: " + r);
-                        foundAny = true;
+                String key = readLine(in, "Model keyword: ").trim().toLowerCase();
+                try (Connection conn = getConnection();
+                     PreparedStatement stmt = conn.prepareStatement(
+                             "SELECT robot_id, model, status FROM ROBOT " +
+                                     "WHERE LOWER(model) LIKE ? ORDER BY robot_id"
+                     )) {
+                    stmt.setString(1, "%" + key + "%");
+
+                    boolean foundAny = false;
+                    try (ResultSet rs = stmt.executeQuery()) {
+                        while (rs.next()) {
+                            System.out.println("Found: " + mapRobot(rs));
+                            foundAny = true;
+                        }
                     }
-                }
-                if (!foundAny) {
-                    System.out.println("No robots matched.");
+
+                    if (!foundAny) {
+                        System.out.println("No robots matched.");
+                    }
+                } catch (SQLException e) {
+                    printDatabaseError("search robot", e);
                 }
             }
             default -> System.out.println("Invalid choice.");
@@ -281,73 +513,352 @@ public class WarehouseApp {
     }
 
     private static void listRobots() {
-        if (robots.isEmpty()) {
-            System.out.println("No robots in system.");
-            return;
-        }
-        System.out.println("\nRobots:");
-        for (Robot r : robots) {
-            System.out.println(" - " + r);
+        try (Connection conn = getConnection();
+             PreparedStatement stmt = conn.prepareStatement(
+                     "SELECT robot_id, model, status FROM ROBOT ORDER BY robot_id"
+             );
+             ResultSet rs = stmt.executeQuery()) {
+            boolean foundAny = false;
+            while (rs.next()) {
+                if (!foundAny) {
+                    System.out.println("\nRobots:");
+                    foundAny = true;
+                }
+                System.out.println(" - " + mapRobot(rs));
+            }
+
+            if (!foundAny) {
+                System.out.println("No robots in system.");
+            }
+        } catch (SQLException e) {
+            printDatabaseError("list robots", e);
         }
     }
 
-    private static Robot findRobotById(int id) {
-        for (Robot r : robots) {
-            if (r.getRobotId() == id) {
-                return r;
+    private static Robot findRobotById(int id) throws SQLException {
+        try (Connection conn = getConnection()) {
+            return findRobotById(conn, id);
+        }
+    }
+
+    private static Robot findRobotById(Connection conn, int id) throws SQLException {
+        try (PreparedStatement stmt = conn.prepareStatement(
+                "SELECT robot_id, model, status FROM ROBOT WHERE robot_id = ?"
+        )) {
+            stmt.setInt(1, id);
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    return mapRobot(rs);
+                }
             }
         }
         return null;
     }
 
-    // ---------------- STUB FLOWS (PROMPT ONLY) ----------------
+    // ---------------- RENTAL / RETURN / DELIVERY / PICKUP ----------------
 
-    private static void rentRobotStub(Scanner in) {
-        System.out.println("\n--- Rent Robots (Prompt Only) ---");
+    private static void rentRobot(Scanner in) {
+        System.out.println("\n--- Rent Robots ---");
         int customerId = readInt(in, "Customer ID: ");
         int robotId = readInt(in, "Robot ID: ");
-        String startDate = readLine(in, "Rental start date (YYYY-MM-DD): ");
-        int days = readInt(in, "Number of days: ");
+        String rentalDate = readLine(in, "Rental date (YYYY-MM-DD): ");
+        String expectedReturnDate = readLine(in, "Expected return date (YYYY-MM-DD, optional): ").trim();
 
-        System.out.println("Rental registered (stub). Customer " + customerId +
-                " rented Robot " + robotId + " starting " + startDate +
-                " for " + days + " days.");
+        try (Connection conn = getConnection()) {
+            conn.setAutoCommit(false);
+            try {
+                Customer customer = findCustomerById(conn, customerId);
+                if (customer == null) {
+                    System.out.println("Customer not found.");
+                    conn.rollback();
+                    return;
+                }
+
+                Robot robot = findRobotById(conn, robotId);
+                if (robot == null) {
+                    System.out.println("Robot not found.");
+                    conn.rollback();
+                    return;
+                }
+
+                if (!"AVAILABLE".equals(robot.getStatus())) {
+                    System.out.println("Robot is not available for rental.");
+                    conn.rollback();
+                    return;
+                }
+
+                try (PreparedStatement stmt = conn.prepareStatement(
+                        "INSERT INTO RENTAL (customer_id, robot_id, rental_date, expected_return_date) " +
+                                "VALUES (?, ?, ?, ?)"
+                )) {
+                    stmt.setInt(1, customerId);
+                    stmt.setInt(2, robotId);
+                    stmt.setString(3, rentalDate);
+                    setNullableText(stmt, 4, expectedReturnDate);
+                    stmt.executeUpdate();
+                }
+
+                updateRobotStatus(conn, robotId, "RENTED");
+                conn.commit();
+                System.out.println("Rental recorded.");
+            } catch (SQLException e) {
+                rollbackQuietly(conn);
+                throw e;
+            } finally {
+                conn.setAutoCommit(true);
+            }
+        } catch (SQLException e) {
+            printDatabaseError("record rental", e);
+        }
     }
 
-    private static void returnEquipmentStub(Scanner in) {
-        System.out.println("\n--- Return Equipment (Prompt Only) ---");
+    private static void returnEquipment(Scanner in) {
+        System.out.println("\n--- Return Equipment ---");
         int customerId = readInt(in, "Customer ID: ");
-        int robotId = readInt(in, "Robot ID being returned: ");
+        int robotId = readInt(in, "Robot ID: ");
         String returnDate = readLine(in, "Return date (YYYY-MM-DD): ");
 
-        System.out.println("Return registered (stub). Robot " + robotId +
-                " returned by Customer " + customerId + " on " + returnDate + ".");
+        try (Connection conn = getConnection()) {
+            conn.setAutoCommit(false);
+            try {
+                Customer customer = findCustomerById(conn, customerId);
+                if (customer == null) {
+                    System.out.println("Customer not found.");
+                    conn.rollback();
+                    return;
+                }
+
+                Robot robot = findRobotById(conn, robotId);
+                if (robot == null) {
+                    System.out.println("Robot not found.");
+                    conn.rollback();
+                    return;
+                }
+
+                Integer rentalId = findActiveRentalId(conn, customerId, robotId);
+                if (rentalId == null) {
+                    System.out.println("No active rental found for that customer and robot.");
+                    conn.rollback();
+                    return;
+                }
+
+                try (PreparedStatement stmt = conn.prepareStatement(
+                        "INSERT INTO EQUIPMENT_RETURN (rental_id, customer_id, robot_id, return_date) " +
+                                "VALUES (?, ?, ?, ?)"
+                )) {
+                    stmt.setInt(1, rentalId);
+                    stmt.setInt(2, customerId);
+                    stmt.setInt(3, robotId);
+                    stmt.setString(4, returnDate);
+                    stmt.executeUpdate();
+                }
+
+                updateRobotStatus(conn, robotId, "AVAILABLE");
+                conn.commit();
+                System.out.println("Equipment returned.");
+            } catch (SQLException e) {
+                rollbackQuietly(conn);
+                throw e;
+            } finally {
+                conn.setAutoCommit(true);
+            }
+        } catch (SQLException e) {
+            printDatabaseError("return equipment", e);
+        }
     }
 
-    private static void deliverRobotStub(Scanner in) {
-        System.out.println("\n--- Delivery of Robots (Prompt Only) ---");
+    private static void deliverRobot(Scanner in) {
+        System.out.println("\n--- Delivery of Robots ---");
         int customerId = readInt(in, "Customer ID: ");
-        int robotId = readInt(in, "Robot ID to deliver: ");
-        String address = readLine(in, "Delivery address: ");
-        String deliveryDate = readLine(in, "Delivery date/time: ");
-        String carId = readLine(in, "Driverless car identifier: ");
+        ReferenceSelection reference = readRobotOrRentalReference(in);
+        String driverlessCarId = readLine(in, "Driverless car ID: ");
+        String deliveryDate = readLine(in, "Delivery date: ");
+        String destination = readLine(in, "Delivery address or destination: ");
 
-        System.out.println("Robot delivered (stub). Robot " + robotId +
-                " scheduled for delivery to customer " + customerId + " at " + address +
-                " at " + deliveryDate + " using car " + carId + ".");
+        try (Connection conn = getConnection()) {
+            Customer customer = findCustomerById(conn, customerId);
+            if (customer == null) {
+                System.out.println("Customer not found.");
+                return;
+            }
+
+            ResolvedReference resolvedReference = resolveReference(conn, customerId, reference);
+            if (resolvedReference == null) {
+                return;
+            }
+
+            try (PreparedStatement stmt = conn.prepareStatement(
+                    "INSERT INTO DELIVERY " +
+                            "(customer_id, robot_id, rental_id, driverless_car_id, delivery_date, destination) " +
+                            "VALUES (?, ?, ?, ?, ?, ?)"
+            )) {
+                stmt.setInt(1, customerId);
+                setNullableInt(stmt, 2, resolvedReference.getRobotId());
+                setNullableInt(stmt, 3, resolvedReference.getRentalId());
+                stmt.setString(4, driverlessCarId);
+                stmt.setString(5, deliveryDate);
+                stmt.setString(6, destination);
+                stmt.executeUpdate();
+            }
+
+            System.out.println("Robot delivered.");
+        } catch (SQLException e) {
+            printDatabaseError("record delivery", e);
+        }
     }
 
-    private static void pickupRobotStub(Scanner in) {
-        System.out.println("\n--- Pickup of Robots (Prompt Only) ---");
-        readInt(in, "Customer ID: ");
-        int robotId = readInt(in, "Robot ID to pick up: ");
-        String address = readLine(in, "Pickup address: ");
-        String pickupDate = readLine(in, "Pickup date/time: ");
-        String carId = readLine(in, "Driverless car identifier: ");
+    private static void pickupRobot(Scanner in) {
+        System.out.println("\n--- Pickup of Robots ---");
+        int customerId = readInt(in, "Customer ID: ");
+        ReferenceSelection reference = readRobotOrRentalReference(in);
+        String driverlessCarId = readLine(in, "Driverless car ID: ");
+        String pickupDate = readLine(in, "Pickup date: ");
+        String pickupAddress = readLine(in, "Pickup address: ");
 
-        System.out.println("Robot pickup scheduled (stub). Robot " + robotId +
-                " scheduled for pickup from " + address +
-                " at " + pickupDate + " using car " + carId + ".");
+        try (Connection conn = getConnection()) {
+            Customer customer = findCustomerById(conn, customerId);
+            if (customer == null) {
+                System.out.println("Customer not found.");
+                return;
+            }
+
+            ResolvedReference resolvedReference = resolveReference(conn, customerId, reference);
+            if (resolvedReference == null) {
+                return;
+            }
+
+            try (PreparedStatement stmt = conn.prepareStatement(
+                    "INSERT INTO PICKUP " +
+                            "(customer_id, robot_id, rental_id, driverless_car_id, pickup_date, pickup_address) " +
+                            "VALUES (?, ?, ?, ?, ?, ?)"
+            )) {
+                stmt.setInt(1, customerId);
+                setNullableInt(stmt, 2, resolvedReference.getRobotId());
+                setNullableInt(stmt, 3, resolvedReference.getRentalId());
+                stmt.setString(4, driverlessCarId);
+                stmt.setString(5, pickupDate);
+                stmt.setString(6, pickupAddress);
+                stmt.executeUpdate();
+            }
+
+            System.out.println("Robot picked up.");
+        } catch (SQLException e) {
+            printDatabaseError("record pickup", e);
+        }
+    }
+
+    private static ReferenceSelection readRobotOrRentalReference(Scanner in) {
+        while (true) {
+            System.out.println("Reference by:");
+            System.out.println("1) Robot ID");
+            System.out.println("2) Rental ID");
+            int choice = readInt(in, "Choose: ");
+
+            switch (choice) {
+                case 1 -> {
+                    return new ReferenceSelection(readInt(in, "Robot ID: "), null);
+                }
+                case 2 -> {
+                    return new ReferenceSelection(null, readInt(in, "Rental ID: "));
+                }
+                default -> System.out.println("Invalid choice.");
+            }
+        }
+    }
+
+    private static ResolvedReference resolveReference(
+            Connection conn,
+            int customerId,
+            ReferenceSelection selection
+    ) throws SQLException {
+        if (selection.getRobotId() != null) {
+            Robot robot = findRobotById(conn, selection.getRobotId());
+            if (robot == null) {
+                System.out.println("Robot not found.");
+                return null;
+            }
+            return new ResolvedReference(selection.getRobotId(), null);
+        }
+
+        Rental rental = findRentalById(conn, selection.getRentalId());
+        if (rental == null) {
+            System.out.println("Rental not found.");
+            return null;
+        }
+        if (rental.getCustomerId() != customerId) {
+            System.out.println("Rental does not belong to that customer.");
+            return null;
+        }
+
+        return new ResolvedReference(rental.getRobotId(), rental.getRentalId());
+    }
+
+    private static Rental findRentalById(Connection conn, int rentalId) throws SQLException {
+        try (PreparedStatement stmt = conn.prepareStatement(
+                "SELECT rental_id, customer_id, robot_id, rental_date, expected_return_date " +
+                        "FROM RENTAL WHERE rental_id = ?"
+        )) {
+            stmt.setInt(1, rentalId);
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    return mapRental(rs);
+                }
+            }
+        }
+        return null;
+    }
+
+    private static Integer findActiveRentalId(Connection conn, int customerId, int robotId) throws SQLException {
+        try (PreparedStatement stmt = conn.prepareStatement(
+                "SELECT r.rental_id " +
+                        "FROM RENTAL r " +
+                        "LEFT JOIN EQUIPMENT_RETURN er ON er.rental_id = r.rental_id " +
+                        "WHERE r.customer_id = ? AND r.robot_id = ? AND er.rental_id IS NULL " +
+                        "ORDER BY r.rental_id DESC LIMIT 1"
+        )) {
+            stmt.setInt(1, customerId);
+            stmt.setInt(2, robotId);
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getInt("rental_id");
+                }
+            }
+        }
+        return null;
+    }
+
+    private static void updateRobotStatus(Connection conn, int robotId, String status) throws SQLException {
+        try (PreparedStatement stmt = conn.prepareStatement(
+                "UPDATE ROBOT SET status = ? WHERE robot_id = ?"
+        )) {
+            stmt.setString(1, status);
+            stmt.setInt(2, robotId);
+            stmt.executeUpdate();
+        }
+    }
+
+    private static void setNullableText(PreparedStatement stmt, int index, String value) throws SQLException {
+        if (value == null || value.isBlank()) {
+            stmt.setNull(index, Types.VARCHAR);
+        } else {
+            stmt.setString(index, value);
+        }
+    }
+
+    private static void setNullableInt(PreparedStatement stmt, int index, Integer value) throws SQLException {
+        if (value == null) {
+            stmt.setNull(index, Types.INTEGER);
+        } else {
+            stmt.setInt(index, value);
+        }
+    }
+
+    private static void rollbackQuietly(Connection conn) {
+        try {
+            conn.rollback();
+        } catch (SQLException ignored) {
+            // Ignore rollback failures while surfacing the original error.
+        }
     }
 
     // ---------------- INPUT HELPERS ----------------
@@ -369,12 +880,55 @@ public class WarehouseApp {
         return in.nextLine();
     }
 
+    private static String readRobotStatus(Scanner in, String prompt, boolean allowBlank) {
+        while (true) {
+            String status = readLine(in, prompt).trim().toUpperCase();
+            if (allowBlank && status.isEmpty()) {
+                return "";
+            }
+            if (status.equals("AVAILABLE") || status.equals("RENTED") || status.equals("MAINTENANCE")) {
+                return status;
+            }
+            System.out.println("Status must be AVAILABLE, RENTED, or MAINTENANCE.");
+        }
+    }
+
+    private static void printDatabaseError(String action, SQLException e) {
+        System.out.println("Database error while trying to " + action + ": " + e.getMessage());
+    }
+
+    private static Customer mapCustomer(ResultSet rs) throws SQLException {
+        return new Customer(
+                rs.getInt("customer_id"),
+                rs.getString("name"),
+                rs.getString("phone")
+        );
+    }
+
+    private static Robot mapRobot(ResultSet rs) throws SQLException {
+        return new Robot(
+                rs.getInt("robot_id"),
+                rs.getString("model"),
+                rs.getString("status")
+        );
+    }
+
+    private static Rental mapRental(ResultSet rs) throws SQLException {
+        return new Rental(
+                rs.getInt("rental_id"),
+                rs.getInt("customer_id"),
+                rs.getInt("robot_id"),
+                rs.getString("rental_date"),
+                rs.getString("expected_return_date")
+        );
+    }
+
     // ---------------- ENTITY CLASSES ----------------
 
     static class Customer {
         private final int customerId;
-        private String name;
-        private String phone;
+        private final String name;
+        private final String phone;
 
         Customer(int customerId, String name, String phone) {
             this.customerId = customerId;
@@ -382,20 +936,12 @@ public class WarehouseApp {
             this.phone = phone;
         }
 
-        int getCustomerId() {
-            return customerId;
-        }
-
         String getName() {
             return name;
         }
 
-        void setName(String name) {
-            this.name = name;
-        }
-                
-        void setPhone(String phone) {
-            this.phone = phone;
+        String getPhone() {
+            return phone;
         }
 
         @Override
@@ -406,8 +952,8 @@ public class WarehouseApp {
 
     static class Robot {
         private final int robotId;
-        private String model;
-        private String status;
+        private final String model;
+        private final String status;
 
         Robot(int robotId, String model, String status) {
             this.robotId = robotId;
@@ -415,25 +961,88 @@ public class WarehouseApp {
             this.status = status;
         }
 
-        int getRobotId() {
-            return robotId;
-        }
-
         String getModel() {
             return model;
         }
 
-        void setModel(String model) {
-            this.model = model;
-        }
-
-        void setStatus(String status) {
-            this.status = status;
+        String getStatus() {
+            return status;
         }
 
         @Override
         public String toString() {
             return "Robot{id=" + robotId + ", model='" + model + "', status='" + status + "'}";
+        }
+    }
+
+    static class Rental {
+        private final int rentalId;
+        private final int customerId;
+        private final int robotId;
+        private final String rentalDate;
+        private final String expectedReturnDate;
+
+        Rental(int rentalId, int customerId, int robotId, String rentalDate, String expectedReturnDate) {
+            this.rentalId = rentalId;
+            this.customerId = customerId;
+            this.robotId = robotId;
+            this.rentalDate = rentalDate;
+            this.expectedReturnDate = expectedReturnDate;
+        }
+
+        int getRentalId() {
+            return rentalId;
+        }
+
+        int getCustomerId() {
+            return customerId;
+        }
+
+        int getRobotId() {
+            return robotId;
+        }
+
+        @Override
+        public String toString() {
+            return "Rental{id=" + rentalId + ", customerId=" + customerId +
+                    ", robotId=" + robotId + ", rentalDate='" + rentalDate +
+                    "', expectedReturnDate='" + expectedReturnDate + "'}";
+        }
+    }
+
+    static class ReferenceSelection {
+        private final Integer robotId;
+        private final Integer rentalId;
+
+        ReferenceSelection(Integer robotId, Integer rentalId) {
+            this.robotId = robotId;
+            this.rentalId = rentalId;
+        }
+
+        Integer getRobotId() {
+            return robotId;
+        }
+
+        Integer getRentalId() {
+            return rentalId;
+        }
+    }
+
+    static class ResolvedReference {
+        private final Integer robotId;
+        private final Integer rentalId;
+
+        ResolvedReference(Integer robotId, Integer rentalId) {
+            this.robotId = robotId;
+            this.rentalId = rentalId;
+        }
+
+        Integer getRobotId() {
+            return robotId;
+        }
+
+        Integer getRentalId() {
+            return rentalId;
         }
     }
 }
