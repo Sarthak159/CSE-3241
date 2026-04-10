@@ -1,35 +1,43 @@
-# Warehouse Robot Management System
+# Community Robotics Management Console
 
-A Java console application for managing warehouse customers, robots, rentals, returns, deliveries, and pickups using SQLite.
+A Java console application for managing customers, robots, rentals, returns, and delivery assignments in SQLite using the `community_robotic.db` schema.
 
 ## Project Files
 
 - `WarehouseApp.java`: main application source
-- `Warehouse.db`: SQLite database used by the app
+- `community_robotic.db`: default SQLite database used by the app
+- `Warehouse.db`: older warehouse-style database kept in the repo, but no longer the default target
 - `lib/sqlite-jdbc-3.36.0.jar`: SQLite JDBC driver
 
 ## Features
 
-- Add, edit, delete, search, and list customers
-- Add, edit, delete, search, and list robots
-- Record robot rentals
-- Record equipment returns
-- Record robot deliveries
-- Record robot pickups
-- Store all data in SQLite instead of temporary in-memory lists
+- Add, edit, delete, search, and list customers from `Customer`
+- Add, edit, delete, search, and list robots across `Robot` and `Asset`
+- Record rentals in `Rental`
+- Return equipment by updating `Rental.returnDate`
+- Record delivery and pickup assignments in `Delivers`
+- Validate that the selected database matches the expected community schema before opening the menu
 
-## Database Tables
+## Database Tables Used
 
-The application uses these tables in `Warehouse.db`:
+The app expects these community-schema tables:
 
-- `CUSTOMER`
-- `ROBOT`
-- `RENTAL`
-- `EQUIPMENT_RETURN`
-- `DELIVERY`
-- `PICKUP`
+- `Customer`
+- `Community_Facility`
+- `Asset`
+- `Robot`
+- `Rental`
+- `Driverless_Car`
+- `Delivers`
+- `Warranty`
+- `Order_Request_Facility`
 
-The app creates any missing tables automatically when it starts.
+Notes about the model:
+
+- Robot status, model, year, and order request live on `Asset`, not `Robot`.
+- Returning a rental sets `Rental.returnDate` and moves the robot asset back to `Available`.
+- Delivery and pickup assignments are both recorded in `Delivers`.
+- New robots must use a valid `model` + `year` + `orderRequestNum` combination that already exists in `Warranty`.
 
 ## Requirements
 
@@ -46,9 +54,25 @@ javac WarehouseApp.java
 
 ## Run
 
+Use the default community database:
+
 ```bash
 java -cp ".:lib/sqlite-jdbc-3.36.0.jar" WarehouseApp
 ```
+
+Use a specific SQLite file that matches the same schema:
+
+```bash
+java -cp ".:lib/sqlite-jdbc-3.36.0.jar" WarehouseApp /path/to/community_robotic.db
+```
+
+You can also set an environment variable:
+
+```bash
+export COMMUNITY_DB_PATH=/path/to/community_robotic.db
+```
+
+The app still accepts the older `WAREHOUSE_DB_PATH` variable as a fallback.
 
 If you want to suppress newer Java native-access warnings from the SQLite driver, use:
 
@@ -61,7 +85,7 @@ java --enable-native-access=ALL-UNNAMED -cp ".:lib/sqlite-jdbc-3.36.0.jar" Wareh
 When the application starts correctly, it prints a message like:
 
 ```text
-Connected to SQLite database successfully: /full/path/to/Warehouse.db
+Connected to SQLite database successfully: /full/path/to/community_robotic.db
 ```
 
 ## Main Menu
@@ -72,12 +96,13 @@ The program provides these options:
 2. Manage Robots
 3. Rent Robots
 4. Return Equipment
-5. Delivery of Robots
-6. Pickup of Robots
+5. Record Delivery Assignment
+6. Record Pickup Assignment
 7. Exit
 
 ## Notes
 
-- Robot status is updated automatically when a rental is recorded or equipment is returned.
-- Deliveries and pickups can be recorded by either `robot ID` or `rental ID`.
-- The database file used by the current project is `Warehouse.db`.
+- The default database file is `community_robotic.db`.
+- `Warehouse.db` is no longer the expected schema for current app behavior.
+- The app validates the schema at startup instead of creating missing tables automatically.
+- If warehouse-era `EQUIPMENT_RETURN`, `DELIVERY`, or `PICKUP` tables are present in the selected community database, the app removes those legacy leftovers on startup because their foreign keys conflict with the community schema.

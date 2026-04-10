@@ -7,13 +7,83 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Types;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 import java.util.Scanner;
+import java.util.Set;
 
 public class WarehouseApp {
 
+    private static final String DEFAULT_DATABASE_NAME = "community_robotic.db";
+    private static final String LEGACY_ENV_DATABASE_PATH = "WAREHOUSE_DB_PATH";
+    private static final String COMMUNITY_ENV_DATABASE_PATH = "COMMUNITY_DB_PATH";
     private static final String SQLITE_DRIVER = "org.sqlite.JDBC";
+    private static final String STATUS_AVAILABLE = "Available";
+    private static final String STATUS_RENTED = "Rented";
+    private static final String[] ASSET_STATUSES = {
+            STATUS_AVAILABLE,
+            STATUS_RENTED,
+            "Maintenance",
+            "Retired",
+            "Reserved"
+    };
+    private static final String CUSTOMER_SELECT =
+            "SELECT customerID, firstName, lastName, address, startDate, phone, email, isActive, assignedFacilityID " +
+                    "FROM Customer";
+    private static final String ROBOT_SELECT =
+            "SELECT r.serialNum, r.primaryFunction, r.name, r.trainingLevel, r.batteryAutonomy, " +
+                    "a.status, a.year, a.model, a.orderRequestNum " +
+                    "FROM Robot r " +
+                    "JOIN Asset a ON a.serialNum = r.serialNum";
+    private static final String RENTAL_SELECT =
+            "SELECT rentalID, dueDate, checkoutDate, returnDate, assetNum, customerID " +
+                    "FROM Rental";
+    private static final String DRIVERLESS_CAR_SELECT =
+            "SELECT dc.serialNum, dc.licensePlate, dc.payloadCapacity, dc.distanceAutonomy, " +
+                    "a.status, a.year, a.model, a.orderRequestNum " +
+                    "FROM Driverless_Car dc " +
+                    "JOIN Asset a ON a.serialNum = dc.serialNum";
+    private static final Set<String> DYNAMIC_TABLES = Set.of(
+            "Customer",
+            "Community_Facility",
+            "Asset",
+            "Robot",
+            "Rental",
+            "Driverless_Car",
+            "Delivers",
+            "Warranty",
+            "Order_Request_Facility",
+            "EQUIPMENT_RETURN",
+            "DELIVERY",
+            "PICKUP"
+    );
+
+    private static Path databasePath;
+
+    @FunctionalInterface
+    private interface StatementBinder {
+        void bind(PreparedStatement stmt) throws SQLException;
+    }
+
+    @FunctionalInterface
+    private interface ResultSetMapper<T> {
+        T map(ResultSet rs) throws SQLException;
+    }
+
+    @FunctionalInterface
+    private interface SqlWork {
+        void run(Connection conn) throws SQLException;
+    }
+
+    @FunctionalInterface
+    private interface TransactionWork {
+        boolean run(Connection conn) throws SQLException;
+    }
 
     public static void main(String[] args) {
+        databasePath = resolveDatabasePath(args);
+
         try {
             initializeDatabase();
             System.out.println("Connected to SQLite database successfully: " + getDatabasePath());
@@ -55,74 +125,9 @@ public class WarehouseApp {
             );
         }
 
-        try (Connection conn = getConnection(); Statement stmt = conn.createStatement()) {
-            stmt.executeUpdate(
-                    "CREATE TABLE IF NOT EXISTS CUSTOMER (" +
-                            "customer_id INTEGER PRIMARY KEY, " +
-                            "name TEXT NOT NULL, " +
-                            "phone TEXT NOT NULL" +
-                            ")"
-            );
-            stmt.executeUpdate(
-                    "CREATE TABLE IF NOT EXISTS ROBOT (" +
-                            "robot_id INTEGER PRIMARY KEY, " +
-                            "model TEXT NOT NULL, " +
-                            "status TEXT NOT NULL" +
-                            ")"
-            );
-            stmt.executeUpdate(
-                    "CREATE TABLE IF NOT EXISTS RENTAL (" +
-                            "rental_id INTEGER PRIMARY KEY AUTOINCREMENT, " +
-                            "customer_id INTEGER NOT NULL, " +
-                            "robot_id INTEGER NOT NULL, " +
-                            "rental_date TEXT NOT NULL, " +
-                            "expected_return_date TEXT, " +
-                            "FOREIGN KEY (customer_id) REFERENCES CUSTOMER(customer_id), " +
-                            "FOREIGN KEY (robot_id) REFERENCES ROBOT(robot_id)" +
-                            ")"
-            );
-            stmt.executeUpdate(
-                    "CREATE TABLE IF NOT EXISTS EQUIPMENT_RETURN (" +
-                            "return_id INTEGER PRIMARY KEY AUTOINCREMENT, " +
-                            "rental_id INTEGER NOT NULL, " +
-                            "customer_id INTEGER NOT NULL, " +
-                            "robot_id INTEGER NOT NULL, " +
-                            "return_date TEXT NOT NULL, " +
-                            "FOREIGN KEY (rental_id) REFERENCES RENTAL(rental_id), " +
-                            "FOREIGN KEY (customer_id) REFERENCES CUSTOMER(customer_id), " +
-                            "FOREIGN KEY (robot_id) REFERENCES ROBOT(robot_id)" +
-                            ")"
-            );
-            stmt.executeUpdate(
-                    "CREATE TABLE IF NOT EXISTS DELIVERY (" +
-                            "delivery_id INTEGER PRIMARY KEY AUTOINCREMENT, " +
-                            "customer_id INTEGER NOT NULL, " +
-                            "robot_id INTEGER, " +
-                            "rental_id INTEGER, " +
-                            "driverless_car_id TEXT NOT NULL, " +
-                            "delivery_date TEXT NOT NULL, " +
-                            "destination TEXT NOT NULL, " +
-                            "CHECK (robot_id IS NOT NULL OR rental_id IS NOT NULL), " +
-                            "FOREIGN KEY (customer_id) REFERENCES CUSTOMER(customer_id), " +
-                            "FOREIGN KEY (robot_id) REFERENCES ROBOT(robot_id), " +
-                            "FOREIGN KEY (rental_id) REFERENCES RENTAL(rental_id)" +
-                            ")"
-            );
-            stmt.executeUpdate(
-                    "CREATE TABLE IF NOT EXISTS PICKUP (" +
-                            "pickup_id INTEGER PRIMARY KEY AUTOINCREMENT, " +
-                            "customer_id INTEGER NOT NULL, " +
-                            "robot_id INTEGER, " +
-                            "rental_id INTEGER, " +
-                            "driverless_car_id TEXT NOT NULL, " +
-                            "pickup_date TEXT NOT NULL, " +
-                            "pickup_address TEXT NOT NULL, " +
-                            "CHECK (robot_id IS NOT NULL OR rental_id IS NOT NULL), " +
-                            "FOREIGN KEY (customer_id) REFERENCES CUSTOMER(customer_id), " +
-                            "FOREIGN KEY (robot_id) REFERENCES ROBOT(robot_id), " +
-                            "FOREIGN KEY (rental_id) REFERENCES RENTAL(rental_id)" +
-                            ")"
-            );
+        try (Connection conn = getConnection()) {
+            removeLegacyWarehouseTables(conn);
+            validateCommunitySchema(conn);
         }
     }
 
@@ -135,23 +140,228 @@ public class WarehouseApp {
     }
 
     private static Path getDatabasePath() {
-        return Paths.get("Warehouse.db").toAbsolutePath().normalize();
+        if (databasePath == null) {
+            databasePath = Paths.get(DEFAULT_DATABASE_NAME).toAbsolutePath().normalize();
+        }
+        return databasePath;
     }
 
-    // ---------------- MAIN MENU ----------------
+    private static Path resolveDatabasePath(String[] args) {
+        if (args.length > 0 && !args[0].isBlank()) {
+            return Paths.get(args[0]).toAbsolutePath().normalize();
+        }
+
+        String envPath = System.getenv(COMMUNITY_ENV_DATABASE_PATH);
+        if (envPath != null && !envPath.isBlank()) {
+            return Paths.get(envPath).toAbsolutePath().normalize();
+        }
+
+        String legacyEnvPath = System.getenv(LEGACY_ENV_DATABASE_PATH);
+        if (legacyEnvPath != null && !legacyEnvPath.isBlank()) {
+            return Paths.get(legacyEnvPath).toAbsolutePath().normalize();
+        }
+
+        return Paths.get(DEFAULT_DATABASE_NAME).toAbsolutePath().normalize();
+    }
+
+    private static void validateCommunitySchema(Connection conn) throws SQLException {
+        validateTableColumns(conn, "Customer",
+                "customerID", "firstName", "lastName", "address", "startDate",
+                "phone", "email", "isActive", "assignedFacilityID");
+        validateTableColumns(conn, "Community_Facility", "facilityID", "city", "address");
+        validateTableColumns(conn, "Asset", "serialNum", "status", "year", "model", "orderRequestNum");
+        validateTableColumns(conn, "Robot",
+                "serialNum", "primaryFunction", "name", "trainingLevel", "batteryAutonomy");
+        validateTableColumns(conn, "Rental",
+                "rentalID", "dueDate", "checkoutDate", "returnDate", "assetNum", "customerID");
+        validateTableColumns(conn, "Driverless_Car",
+                "serialNum", "licensePlate", "payloadCapacity", "distanceAutonomy");
+        validateTableColumns(conn, "Delivers", "carNum", "rentalID", "deliveryType");
+        validateTableColumns(conn, "Warranty", "model", "year", "orderRequestNum", "warrantyExpiration");
+        validateTableColumns(conn, "Order_Request_Facility", "orderRequestNum", "facilityID");
+    }
+
+    private static void removeLegacyWarehouseTables(Connection conn) throws SQLException {
+        dropLegacyWarehouseTableIfPresent(
+                conn,
+                "EQUIPMENT_RETURN",
+                "return_id", "rental_id", "customer_id", "robot_id", "return_date"
+        );
+        dropLegacyWarehouseTableIfPresent(
+                conn,
+                "DELIVERY",
+                "delivery_id", "customer_id", "robot_id", "rental_id", "driverless_car_id", "delivery_date", "destination"
+        );
+        dropLegacyWarehouseTableIfPresent(
+                conn,
+                "PICKUP",
+                "pickup_id", "customer_id", "robot_id", "rental_id", "driverless_car_id", "pickup_date", "pickup_address"
+        );
+    }
+
+    private static void dropLegacyWarehouseTableIfPresent(Connection conn, String tableName, String... legacyColumns)
+            throws SQLException {
+        List<String> actualColumns = getTableColumns(conn, tableName);
+        if (actualColumns.isEmpty()) {
+            return;
+        }
+
+        for (String legacyColumn : legacyColumns) {
+            if (!containsIgnoreCase(actualColumns, legacyColumn)) {
+                return;
+            }
+        }
+
+        try (Statement stmt = conn.createStatement()) {
+            stmt.executeUpdate("DROP TABLE IF EXISTS " + quotedTableName(tableName));
+        }
+    }
+
+    private static void validateTableColumns(Connection conn, String tableName, String... requiredColumns)
+            throws SQLException {
+        List<String> actualColumns = getTableColumns(conn, tableName);
+
+        if (actualColumns.isEmpty()) {
+            throw new SQLException("Required table missing from database: " + tableName);
+        }
+
+        List<String> missingColumns = new ArrayList<>();
+        for (String requiredColumn : requiredColumns) {
+            if (!containsIgnoreCase(actualColumns, requiredColumn)) {
+                missingColumns.add(requiredColumn);
+            }
+        }
+
+        if (!missingColumns.isEmpty()) {
+            throw new SQLException(
+                    "Database schema mismatch for table " + tableName +
+                            ". Missing columns: " + missingColumns +
+                            ". Found columns: " + actualColumns +
+                            ". This app expects the community_robotic schema."
+            );
+        }
+    }
+
+    private static List<String> getTableColumns(Connection conn, String tableName) throws SQLException {
+        List<String> actualColumns = new ArrayList<>();
+
+        try (Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery("PRAGMA table_info(" + quotedTableName(tableName) + ")")) {
+            while (rs.next()) {
+                actualColumns.add(rs.getString("name"));
+            }
+        }
+
+        return actualColumns;
+    }
+
+    private static String quotedTableName(String tableName) throws SQLException {
+        if (!DYNAMIC_TABLES.contains(tableName)) {
+            throw new SQLException("Unexpected table reference: " + tableName);
+        }
+        return "\"" + tableName + "\"";
+    }
+
+    private static boolean containsIgnoreCase(List<String> values, String target) {
+        for (String value : values) {
+            if (value.equalsIgnoreCase(target)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void runWithConnection(String action, SqlWork work) {
+        try (Connection conn = getConnection()) {
+            work.run(conn);
+        } catch (SQLException e) {
+            printDatabaseError(action, e);
+        }
+    }
+
+    private static void runInTransaction(String action, TransactionWork work) {
+        runWithConnection(action, conn -> {
+            conn.setAutoCommit(false);
+            try {
+                if (work.run(conn)) {
+                    conn.commit();
+                } else {
+                    rollbackQuietly(conn);
+                }
+            } catch (SQLException e) {
+                rollbackQuietly(conn);
+                throw e;
+            } finally {
+                conn.setAutoCommit(true);
+            }
+        });
+    }
+
+    private static void executeUpdate(Connection conn, String sql, StatementBinder binder) throws SQLException {
+        try (PreparedStatement stmt = conn.prepareStatement(sql)) {
+            bind(stmt, binder);
+            stmt.executeUpdate();
+        }
+    }
+
+    private static <T> T queryOne(
+            Connection conn,
+            String sql,
+            ResultSetMapper<T> mapper,
+            StatementBinder binder
+    ) throws SQLException {
+        try (PreparedStatement stmt = conn.prepareStatement(sql)) {
+            bind(stmt, binder);
+            try (ResultSet rs = stmt.executeQuery()) {
+                return rs.next() ? mapper.map(rs) : null;
+            }
+        }
+    }
+
+    private static boolean exists(Connection conn, String sql, StatementBinder binder) throws SQLException {
+        return queryOne(conn, sql, rs -> Boolean.TRUE, binder) != null;
+    }
+
+    private static <T> boolean printQueryResults(
+            Connection conn,
+            String sql,
+            StatementBinder binder,
+            ResultSetMapper<T> mapper,
+            String heading,
+            String prefix
+    ) throws SQLException {
+        try (PreparedStatement stmt = conn.prepareStatement(sql)) {
+            bind(stmt, binder);
+            try (ResultSet rs = stmt.executeQuery()) {
+                boolean foundAny = false;
+                while (rs.next()) {
+                    if (!foundAny && heading != null && !heading.isBlank()) {
+                        System.out.println(heading);
+                    }
+                    System.out.println(prefix + mapper.map(rs));
+                    foundAny = true;
+                }
+                return foundAny;
+            }
+        }
+    }
+
+    private static void bind(PreparedStatement stmt, StatementBinder binder) throws SQLException {
+        if (binder != null) {
+            binder.bind(stmt);
+        }
+    }
 
     private static void printMainMenu() {
-        System.out.println("\n=== Warehouse Robot Management System ===");
+        System.out.println("\n=== Community Robotics Management System ===");
         System.out.println("1) Manage Customers");
         System.out.println("2) Manage Robots");
         System.out.println("3) Rent Robots");
         System.out.println("4) Return Equipment");
-        System.out.println("5) Delivery of Robots");
-        System.out.println("6) Pickup of Robots");
+        System.out.println("5) Record Delivery Assignment");
+        System.out.println("6) Record Pickup Assignment");
         System.out.println("7) Exit");
     }
-
-    // ---------------- CUSTOMER MENU ----------------
 
     private static void customerMenu(Scanner in) {
         boolean back = false;
@@ -180,86 +390,127 @@ public class WarehouseApp {
 
     private static void addCustomer(Scanner in) {
         int id = readInt(in, "Customer ID: ");
-        String name = readLine(in, "Name: ");
-        String phone = readLine(in, "Phone: ");
+        String firstName = readRequiredLine(in, "First name: ");
+        String lastName = readRequiredLine(in, "Last name: ");
+        String address = readRequiredLine(in, "Address: ");
+        String startDate = normalizeBlankToNull(readLine(in, "Start date (YYYY-MM-DD, optional): "));
+        String phone = normalizeBlankToNull(readLine(in, "Phone (optional): "));
+        String email = readRequiredLine(in, "Email: ");
+        boolean isActive = readBoolean(in, "Is active? (Y/N): ");
+        int facilityId = readInt(in, "Assigned facility ID: ");
 
-        try {
-            if (findCustomerById(id) != null) {
+        runWithConnection("add customer", conn -> {
+            if (findCustomerById(conn, id) != null) {
                 System.out.println("A customer with that ID already exists.");
                 return;
             }
 
-            try (Connection conn = getConnection();
-                 PreparedStatement stmt = conn.prepareStatement(
-                         "INSERT INTO CUSTOMER (customer_id, name, phone) VALUES (?, ?, ?)"
-                 )) {
-                stmt.setInt(1, id);
-                stmt.setString(2, name);
-                stmt.setString(3, phone);
-                stmt.executeUpdate();
+            if (!facilityExists(conn, facilityId)) {
+                System.out.println("Assigned facility not found.");
+                return;
             }
 
+            executeUpdate(conn,
+                    "INSERT INTO Customer " +
+                            "(customerID, firstName, lastName, address, startDate, phone, email, isActive, assignedFacilityID) " +
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    stmt -> {
+                stmt.setInt(1, id);
+                stmt.setString(2, firstName);
+                stmt.setString(3, lastName);
+                stmt.setString(4, address);
+                setNullableText(stmt, 5, startDate);
+                setNullableText(stmt, 6, phone);
+                stmt.setString(7, email);
+                stmt.setBoolean(8, isActive);
+                stmt.setInt(9, facilityId);
+                    }
+            );
+
             System.out.println("Customer added.");
-        } catch (SQLException e) {
-            printDatabaseError("add customer", e);
-        }
+        });
     }
 
     private static void editCustomer(Scanner in) {
         int id = readInt(in, "Enter Customer ID to edit: ");
 
-        try {
-            Customer customer = findCustomerById(id);
+        runWithConnection("edit customer", conn -> {
+            Customer customer = findCustomerById(conn, id);
             if (customer == null) {
                 System.out.println("Customer not found.");
                 return;
             }
 
             System.out.println("Editing customer: " + customer);
-            String newName = readLine(in, "New name (leave blank to keep current): ");
-            String newPhone = readLine(in, "New phone (leave blank to keep current): ");
+            String newFirstName = readLine(in, "New first name (leave blank to keep current): ").trim();
+            String newLastName = readLine(in, "New last name (leave blank to keep current): ").trim();
+            String newAddress = readLine(in, "New address (leave blank to keep current): ").trim();
+            String newStartDate = readLine(in, "New start date (leave blank to keep current): ").trim();
+            String newPhone = readLine(in, "New phone (leave blank to keep current): ").trim();
+            String newEmail = readLine(in, "New email (leave blank to keep current): ").trim();
+            Boolean newIsActive = readOptionalBoolean(in, "Change active status? (Y/N, leave blank to keep current): ");
+            Integer newFacilityId = readOptionalInt(in, "New assigned facility ID (leave blank to keep current): ");
 
-            String updatedName = newName.trim().isEmpty() ? customer.getName() : newName;
-            String updatedPhone = newPhone.trim().isEmpty() ? customer.getPhone() : newPhone;
+            String updatedFirstName = keepCurrent(newFirstName, customer.firstName());
+            String updatedLastName = keepCurrent(newLastName, customer.lastName());
+            String updatedAddress = keepCurrent(newAddress, customer.address());
+            String updatedStartDate = keepCurrent(newStartDate, customer.startDate());
+            String updatedPhone = keepCurrent(newPhone, customer.phone());
+            String updatedEmail = keepCurrent(newEmail, customer.email());
+            boolean updatedIsActive = keepCurrent(newIsActive, customer.active());
+            int updatedFacilityId = keepCurrent(newFacilityId, customer.assignedFacilityId());
 
-            try (Connection conn = getConnection();
-                 PreparedStatement stmt = conn.prepareStatement(
-                         "UPDATE CUSTOMER SET name = ?, phone = ? WHERE customer_id = ?"
-                 )) {
-                stmt.setString(1, updatedName);
-                stmt.setString(2, updatedPhone);
-                stmt.setInt(3, id);
-                stmt.executeUpdate();
+            if (!facilityExists(conn, updatedFacilityId)) {
+                System.out.println("Assigned facility not found.");
+                return;
             }
 
-            System.out.println("Customer updated: " + new Customer(id, updatedName, updatedPhone));
-        } catch (SQLException e) {
-            printDatabaseError("edit customer", e);
-        }
+            executeUpdate(conn,
+                    "UPDATE Customer " +
+                            "SET firstName = ?, lastName = ?, address = ?, startDate = ?, phone = ?, email = ?, " +
+                            "isActive = ?, assignedFacilityID = ? " +
+                            "WHERE customerID = ?",
+                    stmt -> {
+                stmt.setString(1, updatedFirstName);
+                stmt.setString(2, updatedLastName);
+                stmt.setString(3, updatedAddress);
+                setNullableText(stmt, 4, updatedStartDate);
+                setNullableText(stmt, 5, updatedPhone);
+                stmt.setString(6, updatedEmail);
+                stmt.setBoolean(7, updatedIsActive);
+                stmt.setInt(8, updatedFacilityId);
+                stmt.setInt(9, id);
+                    }
+            );
+
+            System.out.println("Customer updated: " + new Customer(
+                    id,
+                    updatedFirstName,
+                    updatedLastName,
+                    updatedAddress,
+                    updatedStartDate,
+                    updatedPhone,
+                    updatedEmail,
+                    updatedIsActive,
+                    updatedFacilityId
+            ));
+        });
     }
 
     private static void deleteCustomer(Scanner in) {
         int id = readInt(in, "Enter Customer ID to delete: ");
 
-        try {
-            Customer customer = findCustomerById(id);
+        runWithConnection("delete customer", conn -> {
+            Customer customer = findCustomerById(conn, id);
             if (customer == null) {
                 System.out.println("Customer not found.");
                 return;
             }
 
-            try (Connection conn = getConnection();
-                 PreparedStatement stmt = conn.prepareStatement(
-                         "DELETE FROM CUSTOMER WHERE customer_id = ?"
-                 )) {
-                stmt.setInt(1, id);
-                stmt.executeUpdate();
-            }
+            executeUpdate(conn, "DELETE FROM Customer WHERE customerID = ?", stmt -> stmt.setInt(1, id));
 
             System.out.println("Customer deleted.");
-        } catch (SQLException e) {
-            printDatabaseError("delete customer", e);
-        }
+        });
     }
 
     private static void searchCustomer(Scanner in) {
@@ -271,89 +522,65 @@ public class WarehouseApp {
         switch (choice) {
             case 1 -> {
                 int id = readInt(in, "Customer ID: ");
-                try {
-                    Customer customer = findCustomerById(id);
+                runWithConnection("search customer", conn -> {
+                    Customer customer = findCustomerById(conn, id);
                     if (customer == null) {
                         System.out.println("No customer found.");
                     } else {
                         System.out.println("Found: " + customer);
                     }
-                } catch (SQLException e) {
-                    printDatabaseError("search customer", e);
-                }
+                });
             }
             case 2 -> {
-                String key = readLine(in, "Name keyword: ").trim().toLowerCase();
-                try (Connection conn = getConnection();
-                     PreparedStatement stmt = conn.prepareStatement(
-                             "SELECT customer_id, name, phone FROM CUSTOMER " +
-                                     "WHERE LOWER(name) LIKE ? ORDER BY customer_id"
-                     )) {
-                    stmt.setString(1, "%" + key + "%");
-
-                    boolean foundAny = false;
-                    try (ResultSet rs = stmt.executeQuery()) {
-                        while (rs.next()) {
-                            System.out.println("Found: " + mapCustomer(rs));
-                            foundAny = true;
-                        }
-                    }
-
-                    if (!foundAny) {
+                String key = readRequiredLine(in, "Name keyword: ").toLowerCase(Locale.ROOT);
+                runWithConnection("search customer", conn -> {
+                    String pattern = "%" + key + "%";
+                    if (!printQueryResults(
+                            conn,
+                            CUSTOMER_SELECT + " " +
+                                    "WHERE LOWER(firstName || ' ' || lastName) LIKE ? " +
+                                    "OR LOWER(lastName || ' ' || firstName) LIKE ? " +
+                                    "ORDER BY customerID",
+                            stmt -> {
+                                stmt.setString(1, pattern);
+                                stmt.setString(2, pattern);
+                            },
+                            WarehouseApp::mapCustomer,
+                            null,
+                            "Found: "
+                    )) {
                         System.out.println("No customers matched.");
                     }
-                } catch (SQLException e) {
-                    printDatabaseError("search customer", e);
-                }
+                });
             }
             default -> System.out.println("Invalid choice.");
         }
     }
 
     private static void listCustomers() {
-        try (Connection conn = getConnection();
-             PreparedStatement stmt = conn.prepareStatement(
-                     "SELECT customer_id, name, phone FROM CUSTOMER ORDER BY customer_id"
-             );
-             ResultSet rs = stmt.executeQuery()) {
-            boolean foundAny = false;
-            while (rs.next()) {
-                if (!foundAny) {
-                    System.out.println("\nCustomers:");
-                    foundAny = true;
-                }
-                System.out.println(" - " + mapCustomer(rs));
-            }
-
-            if (!foundAny) {
+        runWithConnection("list customers", conn -> {
+            if (!printQueryResults(
+                    conn,
+                    CUSTOMER_SELECT + " ORDER BY customerID",
+                    null,
+                    WarehouseApp::mapCustomer,
+                    "\nCustomers:",
+                    " - "
+            )) {
                 System.out.println("No customers in system.");
             }
-        } catch (SQLException e) {
-            printDatabaseError("list customers", e);
-        }
-    }
-
-    private static Customer findCustomerById(int id) throws SQLException {
-        try (Connection conn = getConnection()) {
-            return findCustomerById(conn, id);
-        }
+        });
     }
 
     private static Customer findCustomerById(Connection conn, int id) throws SQLException {
-        try (PreparedStatement stmt = conn.prepareStatement(
-                "SELECT customer_id, name, phone FROM CUSTOMER WHERE customer_id = ?"
-        )) {
-            stmt.setInt(1, id);
-            try (ResultSet rs = stmt.executeQuery()) {
-                if (rs.next()) {
-                    return mapCustomer(rs);
-                }
-            }
-        }
-        return null;
+        return queryOne(conn, CUSTOMER_SELECT + " WHERE customerID = ?", WarehouseApp::mapCustomer,
+                stmt -> stmt.setInt(1, id));
     }
 
-    // ---------------- ROBOT MENU ----------------
+    private static boolean facilityExists(Connection conn, int facilityId) throws SQLException {
+        return exists(conn, "SELECT 1 FROM Community_Facility WHERE facilityID = ?",
+                stmt -> stmt.setInt(1, facilityId));
+    }
 
     private static void robotMenu(Scanner in) {
         boolean back = false;
@@ -381,382 +608,411 @@ public class WarehouseApp {
     }
 
     private static void addRobot(Scanner in) {
-        int id = readInt(in, "Robot ID: ");
-        String model = readLine(in, "Model: ");
-        String status = readRobotStatus(in, "Status (AVAILABLE/RENTED/MAINTENANCE): ", false);
+        int serialNum = readInt(in, "Robot serial number: ");
+        String name = readRequiredLine(in, "Robot name: ");
+        String primaryFunction = readRequiredLine(in, "Primary function: ");
+        int trainingLevel = readInt(in, "Training level: ");
+        Integer batteryAutonomy = readOptionalInt(in, "Battery autonomy (optional integer): ");
+        String status = readAssetStatus(in, "Asset status (Available/Rented/Maintenance/Retired/Reserved): ", false);
+        String model = readRequiredLine(in, "Model: ");
+        int year = readInt(in, "Year: ");
+        int orderRequestNum = readInt(in, "Order request number: ");
 
-        try {
-            if (findRobotById(id) != null) {
-                System.out.println("A robot with that ID already exists.");
-                return;
+        runInTransaction("add robot", conn -> {
+            if (findRobotById(conn, serialNum) != null || assetExists(conn, serialNum)) {
+                System.out.println("That serial number is already in use.");
+                return false;
             }
 
-            try (Connection conn = getConnection();
-                 PreparedStatement stmt = conn.prepareStatement(
-                         "INSERT INTO ROBOT (robot_id, model, status) VALUES (?, ?, ?)"
-                 )) {
-                stmt.setInt(1, id);
-                stmt.setString(2, model);
-                stmt.setString(3, status);
-                stmt.executeUpdate();
+            if (!orderRequestExists(conn, orderRequestNum)) {
+                System.out.println("Order request number not found.");
+                return false;
             }
+
+            if (!warrantyExists(conn, model, year, orderRequestNum)) {
+                System.out.println("No matching warranty/model/year/order request combination exists.");
+                return false;
+            }
+
+            executeUpdate(conn,
+                    "INSERT INTO Asset (serialNum, status, year, model, orderRequestNum) VALUES (?, ?, ?, ?, ?)",
+                    stmt -> {
+                        stmt.setInt(1, serialNum);
+                        stmt.setString(2, status);
+                        stmt.setInt(3, year);
+                        stmt.setString(4, model);
+                        stmt.setInt(5, orderRequestNum);
+                    }
+            );
+            executeUpdate(conn,
+                    "INSERT INTO Robot (serialNum, primaryFunction, name, trainingLevel, batteryAutonomy) " +
+                            "VALUES (?, ?, ?, ?, ?)",
+                    stmt -> {
+                        stmt.setInt(1, serialNum);
+                        stmt.setString(2, primaryFunction);
+                        stmt.setString(3, name);
+                        stmt.setInt(4, trainingLevel);
+                        setNullableInt(stmt, 5, batteryAutonomy);
+                    }
+            );
 
             System.out.println("Robot added.");
-        } catch (SQLException e) {
-            printDatabaseError("add robot", e);
-        }
+            return true;
+        });
     }
 
     private static void editRobot(Scanner in) {
-        int id = readInt(in, "Enter Robot ID to edit: ");
+        int serialNum = readInt(in, "Enter robot serial number to edit: ");
 
-        try {
-            Robot robot = findRobotById(id);
+        runInTransaction("edit robot", conn -> {
+            Robot robot = findRobotById(conn, serialNum);
             if (robot == null) {
                 System.out.println("Robot not found.");
-                return;
+                return false;
             }
 
             System.out.println("Editing robot: " + robot);
-            String newModel = readLine(in, "New model (leave blank to keep current): ");
-            String newStatus = readRobotStatus(in, "New status (leave blank to keep current): ", true);
+            String newName = readLine(in, "New robot name (leave blank to keep current): ").trim();
+            String newPrimaryFunction = readLine(in, "New primary function (leave blank to keep current): ").trim();
+            Integer newTrainingLevel = readOptionalInt(in, "New training level (leave blank to keep current): ");
+            Integer newBatteryAutonomy = readOptionalInt(in, "New battery autonomy (leave blank to keep current): ");
+            String newStatus = readAssetStatus(in, "New asset status (leave blank to keep current): ", true);
+            String newModel = readLine(in, "New model (leave blank to keep current): ").trim();
+            Integer newYear = readOptionalInt(in, "New year (leave blank to keep current): ");
+            Integer newOrderRequestNum = readOptionalInt(in, "New order request number (leave blank to keep current): ");
 
-            String updatedModel = newModel.trim().isEmpty() ? robot.getModel() : newModel;
-            String updatedStatus = newStatus.trim().isEmpty() ? robot.getStatus() : newStatus;
+            String updatedName = keepCurrent(newName, robot.name());
+            String updatedPrimaryFunction = keepCurrent(newPrimaryFunction, robot.primaryFunction());
+            int updatedTrainingLevel = keepCurrent(newTrainingLevel, robot.trainingLevel());
+            Integer updatedBatteryAutonomy = keepCurrent(newBatteryAutonomy, robot.batteryAutonomy());
+            String updatedStatus = keepCurrent(newStatus, robot.status());
+            String updatedModel = keepCurrent(newModel, robot.model());
+            int updatedYear = keepCurrent(newYear, robot.year());
+            int updatedOrderRequestNum = keepCurrent(newOrderRequestNum, robot.orderRequestNum());
 
-            try (Connection conn = getConnection();
-                 PreparedStatement stmt = conn.prepareStatement(
-                         "UPDATE ROBOT SET model = ?, status = ? WHERE robot_id = ?"
-                 )) {
-                stmt.setString(1, updatedModel);
-                stmt.setString(2, updatedStatus);
-                stmt.setInt(3, id);
-                stmt.executeUpdate();
+            if (!orderRequestExists(conn, updatedOrderRequestNum)) {
+                System.out.println("Order request number not found.");
+                return false;
             }
 
-            System.out.println("Robot updated: " + new Robot(id, updatedModel, updatedStatus));
-        } catch (SQLException e) {
-            printDatabaseError("edit robot", e);
-        }
+            if (!warrantyExists(conn, updatedModel, updatedYear, updatedOrderRequestNum)) {
+                System.out.println("No matching warranty/model/year/order request combination exists.");
+                return false;
+            }
+
+            executeUpdate(conn,
+                    "UPDATE Asset SET status = ?, year = ?, model = ?, orderRequestNum = ? WHERE serialNum = ?",
+                    stmt -> {
+                        stmt.setString(1, updatedStatus);
+                        stmt.setInt(2, updatedYear);
+                        stmt.setString(3, updatedModel);
+                        stmt.setInt(4, updatedOrderRequestNum);
+                        stmt.setInt(5, serialNum);
+                    }
+            );
+            executeUpdate(conn,
+                    "UPDATE Robot SET primaryFunction = ?, name = ?, trainingLevel = ?, batteryAutonomy = ? " +
+                            "WHERE serialNum = ?",
+                    stmt -> {
+                        stmt.setString(1, updatedPrimaryFunction);
+                        stmt.setString(2, updatedName);
+                        stmt.setInt(3, updatedTrainingLevel);
+                        setNullableInt(stmt, 4, updatedBatteryAutonomy);
+                        stmt.setInt(5, serialNum);
+                    }
+            );
+
+            System.out.println("Robot updated: " + new Robot(
+                    serialNum,
+                    updatedPrimaryFunction,
+                    updatedName,
+                    updatedTrainingLevel,
+                    updatedBatteryAutonomy,
+                    updatedStatus,
+                    updatedYear,
+                    updatedModel,
+                    updatedOrderRequestNum
+            ));
+            return true;
+        });
     }
 
     private static void deleteRobot(Scanner in) {
-        int id = readInt(in, "Enter Robot ID to delete: ");
+        int serialNum = readInt(in, "Enter robot serial number to delete: ");
 
-        try {
-            Robot robot = findRobotById(id);
+        runInTransaction("delete robot", conn -> {
+            Robot robot = findRobotById(conn, serialNum);
             if (robot == null) {
                 System.out.println("Robot not found.");
-                return;
+                return false;
             }
 
-            try (Connection conn = getConnection();
-                 PreparedStatement stmt = conn.prepareStatement(
-                         "DELETE FROM ROBOT WHERE robot_id = ?"
-                 )) {
-                stmt.setInt(1, id);
-                stmt.executeUpdate();
-            }
+            executeUpdate(conn, "DELETE FROM Robot WHERE serialNum = ?", stmt -> stmt.setInt(1, serialNum));
+            executeUpdate(conn, "DELETE FROM Asset WHERE serialNum = ?", stmt -> stmt.setInt(1, serialNum));
 
             System.out.println("Robot deleted.");
-        } catch (SQLException e) {
-            printDatabaseError("delete robot", e);
-        }
+            return true;
+        });
     }
 
     private static void searchRobot(Scanner in) {
         System.out.println("Search by:");
-        System.out.println("1) Robot ID");
-        System.out.println("2) Model contains");
+        System.out.println("1) Robot serial number");
+        System.out.println("2) Model, name, or function contains");
         int choice = readInt(in, "Choose: ");
 
         switch (choice) {
             case 1 -> {
-                int id = readInt(in, "Robot ID: ");
-                try {
-                    Robot robot = findRobotById(id);
+                int id = readInt(in, "Robot serial number: ");
+                runWithConnection("search robot", conn -> {
+                    Robot robot = findRobotById(conn, id);
                     if (robot == null) {
                         System.out.println("No robot found.");
                     } else {
                         System.out.println("Found: " + robot);
                     }
-                } catch (SQLException e) {
-                    printDatabaseError("search robot", e);
-                }
+                });
             }
             case 2 -> {
-                String key = readLine(in, "Model keyword: ").trim().toLowerCase();
-                try (Connection conn = getConnection();
-                     PreparedStatement stmt = conn.prepareStatement(
-                             "SELECT robot_id, model, status FROM ROBOT " +
-                                     "WHERE LOWER(model) LIKE ? ORDER BY robot_id"
-                     )) {
-                    stmt.setString(1, "%" + key + "%");
-
-                    boolean foundAny = false;
-                    try (ResultSet rs = stmt.executeQuery()) {
-                        while (rs.next()) {
-                            System.out.println("Found: " + mapRobot(rs));
-                            foundAny = true;
-                        }
-                    }
-
-                    if (!foundAny) {
+                String key = readRequiredLine(in, "Keyword: ").toLowerCase(Locale.ROOT);
+                runWithConnection("search robot", conn -> {
+                    String pattern = "%" + key + "%";
+                    if (!printQueryResults(
+                            conn,
+                            ROBOT_SELECT + " " +
+                                    "WHERE LOWER(a.model) LIKE ? OR LOWER(r.name) LIKE ? OR LOWER(r.primaryFunction) LIKE ? " +
+                                    "ORDER BY r.serialNum",
+                            stmt -> {
+                                stmt.setString(1, pattern);
+                                stmt.setString(2, pattern);
+                                stmt.setString(3, pattern);
+                            },
+                            WarehouseApp::mapRobot,
+                            null,
+                            "Found: "
+                    )) {
                         System.out.println("No robots matched.");
                     }
-                } catch (SQLException e) {
-                    printDatabaseError("search robot", e);
-                }
+                });
             }
             default -> System.out.println("Invalid choice.");
         }
     }
 
     private static void listRobots() {
-        try (Connection conn = getConnection();
-             PreparedStatement stmt = conn.prepareStatement(
-                     "SELECT robot_id, model, status FROM ROBOT ORDER BY robot_id"
-             );
-             ResultSet rs = stmt.executeQuery()) {
-            boolean foundAny = false;
-            while (rs.next()) {
-                if (!foundAny) {
-                    System.out.println("\nRobots:");
-                    foundAny = true;
-                }
-                System.out.println(" - " + mapRobot(rs));
-            }
-
-            if (!foundAny) {
+        runWithConnection("list robots", conn -> {
+            if (!printQueryResults(
+                    conn,
+                    ROBOT_SELECT + " ORDER BY r.serialNum",
+                    null,
+                    WarehouseApp::mapRobot,
+                    "\nRobots:",
+                    " - "
+            )) {
                 System.out.println("No robots in system.");
             }
-        } catch (SQLException e) {
-            printDatabaseError("list robots", e);
-        }
+        });
     }
 
-    private static Robot findRobotById(int id) throws SQLException {
-        try (Connection conn = getConnection()) {
-            return findRobotById(conn, id);
-        }
+    private static Robot findRobotById(Connection conn, int serialNum) throws SQLException {
+        return queryOne(conn, ROBOT_SELECT + " WHERE r.serialNum = ?", WarehouseApp::mapRobot,
+                stmt -> stmt.setInt(1, serialNum));
     }
 
-    private static Robot findRobotById(Connection conn, int id) throws SQLException {
-        try (PreparedStatement stmt = conn.prepareStatement(
-                "SELECT robot_id, model, status FROM ROBOT WHERE robot_id = ?"
-        )) {
-            stmt.setInt(1, id);
-            try (ResultSet rs = stmt.executeQuery()) {
-                if (rs.next()) {
-                    return mapRobot(rs);
-                }
-            }
-        }
-        return null;
+    private static boolean assetExists(Connection conn, int serialNum) throws SQLException {
+        return exists(conn, "SELECT 1 FROM Asset WHERE serialNum = ?", stmt -> stmt.setInt(1, serialNum));
     }
 
-    // ---------------- RENTAL / RETURN / DELIVERY / PICKUP ----------------
+    private static boolean warrantyExists(Connection conn, String model, int year, int orderRequestNum)
+            throws SQLException {
+        return exists(conn,
+                "SELECT 1 FROM Warranty WHERE model = ? AND year = ? AND orderRequestNum = ?",
+                stmt -> {
+                    stmt.setString(1, model);
+                    stmt.setInt(2, year);
+                    stmt.setInt(3, orderRequestNum);
+                });
+    }
+
+    private static boolean orderRequestExists(Connection conn, int orderRequestNum) throws SQLException {
+        return exists(conn, "SELECT 1 FROM Order_Request_Facility WHERE orderRequestNum = ?",
+                stmt -> stmt.setInt(1, orderRequestNum));
+    }
 
     private static void rentRobot(Scanner in) {
         System.out.println("\n--- Rent Robots ---");
         int customerId = readInt(in, "Customer ID: ");
-        int robotId = readInt(in, "Robot ID: ");
-        String rentalDate = readLine(in, "Rental date (YYYY-MM-DD): ");
-        String expectedReturnDate = readLine(in, "Expected return date (YYYY-MM-DD, optional): ").trim();
+        int robotId = readInt(in, "Robot serial number: ");
+        String checkoutDate = readRequiredLine(in, "Checkout date (YYYY-MM-DD): ");
+        String dueDate = readRequiredLine(in, "Due date (YYYY-MM-DD): ");
 
-        try (Connection conn = getConnection()) {
-            conn.setAutoCommit(false);
-            try {
-                Customer customer = findCustomerById(conn, customerId);
-                if (customer == null) {
-                    System.out.println("Customer not found.");
-                    conn.rollback();
-                    return;
-                }
-
-                Robot robot = findRobotById(conn, robotId);
-                if (robot == null) {
-                    System.out.println("Robot not found.");
-                    conn.rollback();
-                    return;
-                }
-
-                if (!"AVAILABLE".equals(robot.getStatus())) {
-                    System.out.println("Robot is not available for rental.");
-                    conn.rollback();
-                    return;
-                }
-
-                try (PreparedStatement stmt = conn.prepareStatement(
-                        "INSERT INTO RENTAL (customer_id, robot_id, rental_date, expected_return_date) " +
-                                "VALUES (?, ?, ?, ?)"
-                )) {
-                    stmt.setInt(1, customerId);
-                    stmt.setInt(2, robotId);
-                    stmt.setString(3, rentalDate);
-                    setNullableText(stmt, 4, expectedReturnDate);
-                    stmt.executeUpdate();
-                }
-
-                updateRobotStatus(conn, robotId, "RENTED");
-                conn.commit();
-                System.out.println("Rental recorded.");
-            } catch (SQLException e) {
-                rollbackQuietly(conn);
-                throw e;
-            } finally {
-                conn.setAutoCommit(true);
+        runInTransaction("record rental", conn -> {
+            Customer customer = findCustomerById(conn, customerId);
+            if (customer == null) {
+                System.out.println("Customer not found.");
+                return false;
             }
-        } catch (SQLException e) {
-            printDatabaseError("record rental", e);
-        }
+
+            if (!customer.active()) {
+                System.out.println("Customer is not active.");
+                return false;
+            }
+
+            Robot robot = findRobotById(conn, robotId);
+            if (robot == null) {
+                System.out.println("Robot not found.");
+                return false;
+            }
+
+            if (!STATUS_AVAILABLE.equalsIgnoreCase(robot.status())) {
+                System.out.println("Robot is not available for rental. Current status: " + robot.status());
+                return false;
+            }
+
+            if (findActiveRentalByAsset(conn, robotId) != null) {
+                System.out.println("Robot already has an active rental.");
+                return false;
+            }
+
+            int rentalId = nextRentalId(conn);
+            executeUpdate(conn,
+                    "INSERT INTO Rental (rentalID, dueDate, checkoutDate, returnDate, assetNum, customerID) " +
+                            "VALUES (?, ?, ?, NULL, ?, ?)",
+                    stmt -> {
+                        stmt.setInt(1, rentalId);
+                        stmt.setString(2, dueDate);
+                        stmt.setString(3, checkoutDate);
+                        stmt.setInt(4, robotId);
+                        stmt.setInt(5, customerId);
+                    }
+            );
+
+            updateAssetStatus(conn, robotId, STATUS_RENTED);
+            System.out.println("Rental recorded with ID " + rentalId + ".");
+            return true;
+        });
     }
 
     private static void returnEquipment(Scanner in) {
         System.out.println("\n--- Return Equipment ---");
         int customerId = readInt(in, "Customer ID: ");
-        int robotId = readInt(in, "Robot ID: ");
-        String returnDate = readLine(in, "Return date (YYYY-MM-DD): ");
+        ReferenceSelection reference = readRobotOrRentalReference(in);
+        String returnDate = readRequiredLine(in, "Return date (YYYY-MM-DD): ");
 
-        try (Connection conn = getConnection()) {
-            conn.setAutoCommit(false);
-            try {
-                Customer customer = findCustomerById(conn, customerId);
-                if (customer == null) {
-                    System.out.println("Customer not found.");
-                    conn.rollback();
-                    return;
-                }
-
-                Robot robot = findRobotById(conn, robotId);
-                if (robot == null) {
-                    System.out.println("Robot not found.");
-                    conn.rollback();
-                    return;
-                }
-
-                Integer rentalId = findActiveRentalId(conn, customerId, robotId);
-                if (rentalId == null) {
-                    System.out.println("No active rental found for that customer and robot.");
-                    conn.rollback();
-                    return;
-                }
-
-                try (PreparedStatement stmt = conn.prepareStatement(
-                        "INSERT INTO EQUIPMENT_RETURN (rental_id, customer_id, robot_id, return_date) " +
-                                "VALUES (?, ?, ?, ?)"
-                )) {
-                    stmt.setInt(1, rentalId);
-                    stmt.setInt(2, customerId);
-                    stmt.setInt(3, robotId);
-                    stmt.setString(4, returnDate);
-                    stmt.executeUpdate();
-                }
-
-                updateRobotStatus(conn, robotId, "AVAILABLE");
-                conn.commit();
-                System.out.println("Equipment returned.");
-            } catch (SQLException e) {
-                rollbackQuietly(conn);
-                throw e;
-            } finally {
-                conn.setAutoCommit(true);
+        runInTransaction("return equipment", conn -> {
+            Customer customer = findCustomerById(conn, customerId);
+            if (customer == null) {
+                System.out.println("Customer not found.");
+                return false;
             }
-        } catch (SQLException e) {
-            printDatabaseError("return equipment", e);
-        }
+
+            Rental rental = resolveActiveRental(conn, customerId, reference);
+            if (rental == null) {
+                return false;
+            }
+
+            executeUpdate(conn, "UPDATE Rental SET returnDate = ? WHERE rentalID = ?",
+                    stmt -> {
+                        stmt.setString(1, returnDate);
+                        stmt.setInt(2, rental.rentalId());
+                    });
+
+            updateAssetStatus(conn, rental.assetNum(), STATUS_AVAILABLE);
+            System.out.println("Equipment returned for rental " + rental.rentalId() + ".");
+            return true;
+        });
     }
 
     private static void deliverRobot(Scanner in) {
-        System.out.println("\n--- Delivery of Robots ---");
+        System.out.println("\n--- Record Delivery Assignment ---");
         int customerId = readInt(in, "Customer ID: ");
         ReferenceSelection reference = readRobotOrRentalReference(in);
-        String driverlessCarId = readLine(in, "Driverless car ID: ");
-        String deliveryDate = readLine(in, "Delivery date: ");
-        String destination = readLine(in, "Delivery address or destination: ");
+        int driverlessCarId = readInt(in, "Driverless car serial number: ");
+        String deliveryType = readRequiredLine(in, "Delivery type (e.g. Home Delivery): ");
 
-        try (Connection conn = getConnection()) {
-            Customer customer = findCustomerById(conn, customerId);
-            if (customer == null) {
-                System.out.println("Customer not found.");
-                return;
-            }
-
-            ResolvedReference resolvedReference = resolveReference(conn, customerId, reference);
-            if (resolvedReference == null) {
-                return;
-            }
-
-            try (PreparedStatement stmt = conn.prepareStatement(
-                    "INSERT INTO DELIVERY " +
-                            "(customer_id, robot_id, rental_id, driverless_car_id, delivery_date, destination) " +
-                            "VALUES (?, ?, ?, ?, ?, ?)"
-            )) {
-                stmt.setInt(1, customerId);
-                setNullableInt(stmt, 2, resolvedReference.getRobotId());
-                setNullableInt(stmt, 3, resolvedReference.getRentalId());
-                stmt.setString(4, driverlessCarId);
-                stmt.setString(5, deliveryDate);
-                stmt.setString(6, destination);
-                stmt.executeUpdate();
-            }
-
-            System.out.println("Robot delivered.");
-        } catch (SQLException e) {
-            printDatabaseError("record delivery", e);
-        }
+        recordDeliveryAssignment(
+                customerId,
+                reference,
+                driverlessCarId,
+                deliveryType,
+                "record delivery"
+        );
     }
 
     private static void pickupRobot(Scanner in) {
-        System.out.println("\n--- Pickup of Robots ---");
+        System.out.println("\n--- Record Pickup Assignment ---");
         int customerId = readInt(in, "Customer ID: ");
         ReferenceSelection reference = readRobotOrRentalReference(in);
-        String driverlessCarId = readLine(in, "Driverless car ID: ");
-        String pickupDate = readLine(in, "Pickup date: ");
-        String pickupAddress = readLine(in, "Pickup address: ");
+        int driverlessCarId = readInt(in, "Driverless car serial number: ");
+        String pickupType = readRequiredLine(in, "Pickup type description: ");
+        String storedType = pickupType.toLowerCase(Locale.ROOT).startsWith("pickup")
+                ? pickupType
+                : "Pickup - " + pickupType;
 
-        try (Connection conn = getConnection()) {
+        recordDeliveryAssignment(
+                customerId,
+                reference,
+                driverlessCarId,
+                storedType,
+                "record pickup"
+        );
+    }
+
+    private static void recordDeliveryAssignment(
+            int customerId,
+            ReferenceSelection reference,
+            int driverlessCarId,
+            String deliveryType,
+            String action
+    ) {
+        runWithConnection(action, conn -> {
             Customer customer = findCustomerById(conn, customerId);
             if (customer == null) {
                 System.out.println("Customer not found.");
                 return;
             }
 
-            ResolvedReference resolvedReference = resolveReference(conn, customerId, reference);
-            if (resolvedReference == null) {
+            Rental rental = resolveActiveRental(conn, customerId, reference);
+            if (rental == null) {
                 return;
             }
 
-            try (PreparedStatement stmt = conn.prepareStatement(
-                    "INSERT INTO PICKUP " +
-                            "(customer_id, robot_id, rental_id, driverless_car_id, pickup_date, pickup_address) " +
-                            "VALUES (?, ?, ?, ?, ?, ?)"
-            )) {
-                stmt.setInt(1, customerId);
-                setNullableInt(stmt, 2, resolvedReference.getRobotId());
-                setNullableInt(stmt, 3, resolvedReference.getRentalId());
-                stmt.setString(4, driverlessCarId);
-                stmt.setString(5, pickupDate);
-                stmt.setString(6, pickupAddress);
-                stmt.executeUpdate();
+            DriverlessCar driverlessCar = findDriverlessCarById(conn, driverlessCarId);
+            if (driverlessCar == null) {
+                System.out.println("Driverless car not found.");
+                return;
             }
 
-            System.out.println("Robot picked up.");
-        } catch (SQLException e) {
-            printDatabaseError("record pickup", e);
-        }
+            if (!STATUS_AVAILABLE.equalsIgnoreCase(driverlessCar.status())) {
+                System.out.println("Driverless car is not available. Current status: " + driverlessCar.status());
+                return;
+            }
+
+            executeUpdate(conn, "INSERT INTO Delivers (carNum, rentalID, deliveryType) VALUES (?, ?, ?)",
+                    stmt -> {
+                        stmt.setInt(1, driverlessCarId);
+                        stmt.setInt(2, rental.rentalId());
+                        stmt.setString(3, deliveryType);
+                    });
+
+            System.out.println(
+                    "Assignment recorded for rental " + rental.rentalId() +
+                            " using car " + driverlessCar.licensePlate() +
+                            " (" + deliveryType + ")."
+            );
+        });
     }
 
     private static ReferenceSelection readRobotOrRentalReference(Scanner in) {
         while (true) {
             System.out.println("Reference by:");
-            System.out.println("1) Robot ID");
+            System.out.println("1) Robot serial number");
             System.out.println("2) Rental ID");
             int choice = readInt(in, "Choose: ");
 
             switch (choice) {
                 case 1 -> {
-                    return new ReferenceSelection(readInt(in, "Robot ID: "), null);
+                    return new ReferenceSelection(readInt(in, "Robot serial number: "), null);
                 }
                 case 2 -> {
                     return new ReferenceSelection(null, readInt(in, "Rental ID: "));
@@ -766,75 +1022,213 @@ public class WarehouseApp {
         }
     }
 
-    private static ResolvedReference resolveReference(
-            Connection conn,
-            int customerId,
-            ReferenceSelection selection
-    ) throws SQLException {
-        if (selection.getRobotId() != null) {
-            Robot robot = findRobotById(conn, selection.getRobotId());
+    private static Rental resolveActiveRental(Connection conn, int customerId, ReferenceSelection selection)
+            throws SQLException {
+        if (selection.robotId() != null) {
+            Robot robot = findRobotById(conn, selection.robotId());
             if (robot == null) {
                 System.out.println("Robot not found.");
                 return null;
             }
-            return new ResolvedReference(selection.getRobotId(), null);
+
+            Rental rental = findActiveRentalByCustomerAndAsset(conn, customerId, selection.robotId());
+            if (rental == null) {
+                System.out.println("No active rental found for that customer and robot.");
+                return null;
+            }
+            return rental;
         }
 
-        Rental rental = findRentalById(conn, selection.getRentalId());
+        Rental rental = findRentalById(conn, selection.rentalId());
         if (rental == null) {
             System.out.println("Rental not found.");
             return null;
         }
-        if (rental.getCustomerId() != customerId) {
+        if (rental.customerId() != customerId) {
             System.out.println("Rental does not belong to that customer.");
             return null;
         }
+        if (rental.returnDate() != null && !rental.returnDate().isBlank()) {
+            System.out.println("Rental is already returned.");
+            return null;
+        }
 
-        return new ResolvedReference(rental.getRobotId(), rental.getRentalId());
+        return rental;
     }
 
     private static Rental findRentalById(Connection conn, int rentalId) throws SQLException {
-        try (PreparedStatement stmt = conn.prepareStatement(
-                "SELECT rental_id, customer_id, robot_id, rental_date, expected_return_date " +
-                        "FROM RENTAL WHERE rental_id = ?"
-        )) {
-            stmt.setInt(1, rentalId);
-            try (ResultSet rs = stmt.executeQuery()) {
-                if (rs.next()) {
-                    return mapRental(rs);
+        return queryOne(conn, RENTAL_SELECT + " WHERE rentalID = ?", WarehouseApp::mapRental,
+                stmt -> stmt.setInt(1, rentalId));
+    }
+
+    private static Rental findActiveRentalByAsset(Connection conn, int assetNum) throws SQLException {
+        return queryOne(
+                conn,
+                RENTAL_SELECT + " WHERE assetNum = ? AND returnDate IS NULL ORDER BY rentalID DESC LIMIT 1",
+                WarehouseApp::mapRental,
+                stmt -> stmt.setInt(1, assetNum)
+        );
+    }
+
+    private static Rental findActiveRentalByCustomerAndAsset(Connection conn, int customerId, int assetNum)
+            throws SQLException {
+        return queryOne(
+                conn,
+                RENTAL_SELECT + " WHERE customerID = ? AND assetNum = ? AND returnDate IS NULL " +
+                        "ORDER BY rentalID DESC LIMIT 1",
+                WarehouseApp::mapRental,
+                stmt -> {
+                    stmt.setInt(1, customerId);
+                    stmt.setInt(2, assetNum);
                 }
+        );
+    }
+
+    private static int nextRentalId(Connection conn) throws SQLException {
+        Integer nextId = queryOne(conn, "SELECT COALESCE(MAX(rentalID), 0) + 1 AS nextId FROM Rental",
+                rs -> rs.getInt("nextId"), null);
+        return nextId == null ? 1 : nextId;
+    }
+
+    private static void updateAssetStatus(Connection conn, int serialNum, String status) throws SQLException {
+        executeUpdate(conn, "UPDATE Asset SET status = ? WHERE serialNum = ?",
+                stmt -> {
+                    stmt.setString(1, status);
+                    stmt.setInt(2, serialNum);
+                });
+    }
+
+    private static DriverlessCar findDriverlessCarById(Connection conn, int serialNum) throws SQLException {
+        return queryOne(conn, DRIVERLESS_CAR_SELECT + " WHERE dc.serialNum = ?", WarehouseApp::mapDriverlessCar,
+                stmt -> stmt.setInt(1, serialNum));
+    }
+
+    private static void rollbackQuietly(Connection conn) {
+        try {
+            conn.rollback();
+        } catch (SQLException ignored) {
+            // Ignore rollback failures while surfacing the original error.
+        }
+    }
+
+    private static int readInt(Scanner in, String prompt) {
+        while (true) {
+            System.out.print(prompt);
+            String s = in.nextLine().trim();
+            try {
+                return Integer.parseInt(s);
+            } catch (NumberFormatException e) {
+                System.out.println("Please enter a valid integer.");
+            }
+        }
+    }
+
+    private static Integer readOptionalInt(Scanner in, String prompt) {
+        while (true) {
+            System.out.print(prompt);
+            String s = in.nextLine().trim();
+            if (s.isEmpty()) {
+                return null;
+            }
+            try {
+                return Integer.parseInt(s);
+            } catch (NumberFormatException e) {
+                System.out.println("Please enter a valid integer or leave it blank.");
+            }
+        }
+    }
+
+    private static String readLine(Scanner in, String prompt) {
+        System.out.print(prompt);
+        return in.nextLine();
+    }
+
+    private static String readRequiredLine(Scanner in, String prompt) {
+        while (true) {
+            String value = readLine(in, prompt).trim();
+            if (!value.isEmpty()) {
+                return value;
+            }
+            System.out.println("This value is required.");
+        }
+    }
+
+    private static boolean readBoolean(Scanner in, String prompt) {
+        while (true) {
+            Boolean parsed = parseBooleanToken(readLine(in, prompt).trim());
+            if (parsed != null) {
+                return parsed;
+            }
+            System.out.println("Please enter Y or N.");
+        }
+    }
+
+    private static Boolean readOptionalBoolean(Scanner in, String prompt) {
+        while (true) {
+            String value = readLine(in, prompt).trim();
+            if (value.isEmpty()) {
+                return null;
+            }
+            Boolean parsed = parseBooleanToken(value);
+            if (parsed != null) {
+                return parsed;
+            }
+            System.out.println("Please enter Y, N, or leave it blank.");
+        }
+    }
+
+    private static String readAssetStatus(Scanner in, String prompt, boolean allowBlank) {
+        while (true) {
+            String value = readLine(in, prompt).trim();
+            if (allowBlank && value.isEmpty()) {
+                return "";
+            }
+
+            String canonical = canonicalStatus(value);
+            if (canonical != null) {
+                return canonical;
+            }
+
+            System.out.println("Status must be one of: Available, Rented, Maintenance, Retired, Reserved.");
+        }
+    }
+
+    private static String canonicalStatus(String value) {
+        for (String allowedStatus : ASSET_STATUSES) {
+            if (allowedStatus.equalsIgnoreCase(value)) {
+                return allowedStatus;
             }
         }
         return null;
     }
 
-    private static Integer findActiveRentalId(Connection conn, int customerId, int robotId) throws SQLException {
-        try (PreparedStatement stmt = conn.prepareStatement(
-                "SELECT r.rental_id " +
-                        "FROM RENTAL r " +
-                        "LEFT JOIN EQUIPMENT_RETURN er ON er.rental_id = r.rental_id " +
-                        "WHERE r.customer_id = ? AND r.robot_id = ? AND er.rental_id IS NULL " +
-                        "ORDER BY r.rental_id DESC LIMIT 1"
-        )) {
-            stmt.setInt(1, customerId);
-            stmt.setInt(2, robotId);
-            try (ResultSet rs = stmt.executeQuery()) {
-                if (rs.next()) {
-                    return rs.getInt("rental_id");
-                }
-            }
+    private static String normalizeBlankToNull(String value) {
+        if (value == null) {
+            return null;
         }
-        return null;
+
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
     }
 
-    private static void updateRobotStatus(Connection conn, int robotId, String status) throws SQLException {
-        try (PreparedStatement stmt = conn.prepareStatement(
-                "UPDATE ROBOT SET status = ? WHERE robot_id = ?"
-        )) {
-            stmt.setString(1, status);
-            stmt.setInt(2, robotId);
-            stmt.executeUpdate();
-        }
+    private static Boolean parseBooleanToken(String value) {
+        return switch (value.toLowerCase(Locale.ROOT)) {
+            case "y", "yes", "true", "1" -> true;
+            case "n", "no", "false", "0" -> false;
+            default -> null;
+        };
+    }
+
+    private static String keepCurrent(String updatedValue, String currentValue) {
+        return updatedValue.isEmpty() ? currentValue : updatedValue;
+    }
+
+    private static <T> T keepCurrent(T updatedValue, T currentValue) {
+        return updatedValue == null ? currentValue : updatedValue;
+    }
+
+    private static void printDatabaseError(String action, SQLException e) {
+        System.out.println("Database error while trying to " + action + ": " + e.getMessage());
     }
 
     private static void setNullableText(PreparedStatement stmt, int index, String value) throws SQLException {
@@ -853,196 +1247,154 @@ public class WarehouseApp {
         }
     }
 
-    private static void rollbackQuietly(Connection conn) {
-        try {
-            conn.rollback();
-        } catch (SQLException ignored) {
-            // Ignore rollback failures while surfacing the original error.
-        }
-    }
-
-    // ---------------- INPUT HELPERS ----------------
-
-    private static int readInt(Scanner in, String prompt) {
-        while (true) {
-            System.out.print(prompt);
-            String s = in.nextLine().trim();
-            try {
-                return Integer.parseInt(s);
-            } catch (NumberFormatException e) {
-                System.out.println("Please enter a valid integer.");
-            }
-        }
-    }
-
-    private static String readLine(Scanner in, String prompt) {
-        System.out.print(prompt);
-        return in.nextLine();
-    }
-
-    private static String readRobotStatus(Scanner in, String prompt, boolean allowBlank) {
-        while (true) {
-            String status = readLine(in, prompt).trim().toUpperCase();
-            if (allowBlank && status.isEmpty()) {
-                return "";
-            }
-            if (status.equals("AVAILABLE") || status.equals("RENTED") || status.equals("MAINTENANCE")) {
-                return status;
-            }
-            System.out.println("Status must be AVAILABLE, RENTED, or MAINTENANCE.");
-        }
-    }
-
-    private static void printDatabaseError(String action, SQLException e) {
-        System.out.println("Database error while trying to " + action + ": " + e.getMessage());
-    }
-
     private static Customer mapCustomer(ResultSet rs) throws SQLException {
         return new Customer(
-                rs.getInt("customer_id"),
-                rs.getString("name"),
-                rs.getString("phone")
+                rs.getInt("customerID"),
+                rs.getString("firstName"),
+                rs.getString("lastName"),
+                rs.getString("address"),
+                rs.getString("startDate"),
+                rs.getString("phone"),
+                rs.getString("email"),
+                rs.getBoolean("isActive"),
+                rs.getInt("assignedFacilityID")
         );
     }
 
     private static Robot mapRobot(ResultSet rs) throws SQLException {
+        int batteryAutonomy = rs.getInt("batteryAutonomy");
+        Integer batteryValue = rs.wasNull() ? null : batteryAutonomy;
+
         return new Robot(
-                rs.getInt("robot_id"),
+                rs.getInt("serialNum"),
+                rs.getString("primaryFunction"),
+                rs.getString("name"),
+                rs.getInt("trainingLevel"),
+                batteryValue,
+                rs.getString("status"),
+                rs.getInt("year"),
                 rs.getString("model"),
-                rs.getString("status")
+                rs.getInt("orderRequestNum")
         );
     }
 
     private static Rental mapRental(ResultSet rs) throws SQLException {
         return new Rental(
-                rs.getInt("rental_id"),
-                rs.getInt("customer_id"),
-                rs.getInt("robot_id"),
-                rs.getString("rental_date"),
-                rs.getString("expected_return_date")
+                rs.getInt("rentalID"),
+                rs.getString("dueDate"),
+                rs.getString("checkoutDate"),
+                rs.getString("returnDate"),
+                rs.getInt("assetNum"),
+                rs.getInt("customerID")
         );
     }
 
-    // ---------------- ENTITY CLASSES ----------------
+    private static DriverlessCar mapDriverlessCar(ResultSet rs) throws SQLException {
+        return new DriverlessCar(
+                rs.getInt("serialNum"),
+                rs.getString("licensePlate"),
+                rs.getInt("payloadCapacity"),
+                rs.getInt("distanceAutonomy"),
+                rs.getString("status"),
+                rs.getInt("year"),
+                rs.getString("model"),
+                rs.getInt("orderRequestNum")
+        );
+    }
 
-    static class Customer {
-        private final int customerId;
-        private final String name;
-        private final String phone;
-
-        Customer(int customerId, String name, String phone) {
-            this.customerId = customerId;
-            this.name = name;
-            this.phone = phone;
-        }
-
-        String getName() {
-            return name;
-        }
-
-        String getPhone() {
-            return phone;
-        }
-
+    private record Customer(
+            int customerId,
+            String firstName,
+            String lastName,
+            String address,
+            String startDate,
+            String phone,
+            String email,
+            boolean active,
+            int assignedFacilityId
+    ) {
         @Override
         public String toString() {
-            return "Customer{id=" + customerId + ", name='" + name + "', phone='" + phone + "'}";
+            return "Customer{id=" + customerId +
+                    ", name='" + firstName + " " + lastName + "'" +
+                    ", email='" + email + "'" +
+                    ", phone='" + formatNullable(phone) + "'" +
+                    ", active=" + active +
+                    ", facilityId=" + assignedFacilityId + "}";
         }
     }
 
-    static class Robot {
-        private final int robotId;
-        private final String model;
-        private final String status;
-
-        Robot(int robotId, String model, String status) {
-            this.robotId = robotId;
-            this.model = model;
-            this.status = status;
-        }
-
-        String getModel() {
-            return model;
-        }
-
-        String getStatus() {
-            return status;
-        }
-
+    private record Robot(
+            int serialNum,
+            String primaryFunction,
+            String name,
+            int trainingLevel,
+            Integer batteryAutonomy,
+            String status,
+            int year,
+            String model,
+            int orderRequestNum
+    ) {
         @Override
         public String toString() {
-            return "Robot{id=" + robotId + ", model='" + model + "', status='" + status + "'}";
+            return "Robot{serial=" + serialNum +
+                    ", name='" + name + "'" +
+                    ", function='" + primaryFunction + "'" +
+                    ", status='" + status + "'" +
+                    ", model='" + model + "'" +
+                    ", year=" + year +
+                    ", orderRequest=" + orderRequestNum +
+                    ", trainingLevel=" + trainingLevel +
+                    ", batteryAutonomy=" + formatNullable(batteryAutonomy) + "}";
         }
     }
 
-    static class Rental {
-        private final int rentalId;
-        private final int customerId;
-        private final int robotId;
-        private final String rentalDate;
-        private final String expectedReturnDate;
-
-        Rental(int rentalId, int customerId, int robotId, String rentalDate, String expectedReturnDate) {
-            this.rentalId = rentalId;
-            this.customerId = customerId;
-            this.robotId = robotId;
-            this.rentalDate = rentalDate;
-            this.expectedReturnDate = expectedReturnDate;
-        }
-
-        int getRentalId() {
-            return rentalId;
-        }
-
-        int getCustomerId() {
-            return customerId;
-        }
-
-        int getRobotId() {
-            return robotId;
-        }
-
+    private record Rental(
+            int rentalId,
+            String dueDate,
+            String checkoutDate,
+            String returnDate,
+            int assetNum,
+            int customerId
+    ) {
         @Override
         public String toString() {
-            return "Rental{id=" + rentalId + ", customerId=" + customerId +
-                    ", robotId=" + robotId + ", rentalDate='" + rentalDate +
-                    "', expectedReturnDate='" + expectedReturnDate + "'}";
+            return "Rental{id=" + rentalId +
+                    ", customerId=" + customerId +
+                    ", assetNum=" + assetNum +
+                    ", checkoutDate='" + checkoutDate + "'" +
+                    ", dueDate='" + dueDate + "'" +
+                    ", returnDate='" + formatNullable(returnDate) + "'}";
         }
     }
 
-    static class ReferenceSelection {
-        private final Integer robotId;
-        private final Integer rentalId;
-
-        ReferenceSelection(Integer robotId, Integer rentalId) {
-            this.robotId = robotId;
-            this.rentalId = rentalId;
-        }
-
-        Integer getRobotId() {
-            return robotId;
-        }
-
-        Integer getRentalId() {
-            return rentalId;
+    private record DriverlessCar(
+            int serialNum,
+            String licensePlate,
+            int payloadCapacity,
+            int distanceAutonomy,
+            String status,
+            int year,
+            String model,
+            int orderRequestNum
+    ) {
+        @Override
+        public String toString() {
+            return "DriverlessCar{serial=" + serialNum +
+                    ", licensePlate='" + licensePlate + "'" +
+                    ", status='" + status + "'" +
+                    ", payloadCapacity=" + payloadCapacity +
+                    ", distanceAutonomy=" + distanceAutonomy +
+                    ", model='" + model + "'" +
+                    ", year=" + year +
+                    ", orderRequest=" + orderRequestNum + "}";
         }
     }
 
-    static class ResolvedReference {
-        private final Integer robotId;
-        private final Integer rentalId;
+    private record ReferenceSelection(Integer robotId, Integer rentalId) {
+    }
 
-        ResolvedReference(Integer robotId, Integer rentalId) {
-            this.robotId = robotId;
-            this.rentalId = rentalId;
-        }
-
-        Integer getRobotId() {
-            return robotId;
-        }
-
-        Integer getRentalId() {
-            return rentalId;
-        }
+    private static String formatNullable(Object value) {
+        return value == null ? "n/a" : String.valueOf(value);
     }
 }
