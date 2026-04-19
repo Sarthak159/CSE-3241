@@ -1,59 +1,65 @@
-# Community Robotics Management Console
+<h1 align="center">Community Robotics Management Console</h1>
 
-A Java console application for managing customers, robots, rentals, returns, and delivery assignments in SQLite using the `community_robotic.db` schema.
+<p align="center">
+  A Java console application for managing customers, robots, rentals, returns, delivery assignments, and reports on top of the <code>community_robotic.db</code> schema.
+</p>
 
-## Project Files
+<p align="center">
+  <img src="https://img.shields.io/badge/Java-25%2B-173F5F?style=for-the-badge&logo=openjdk&logoColor=white" alt="Java 25+ badge">
+  <img src="https://img.shields.io/badge/Database-SQLite-0B6E99?style=for-the-badge&logo=sqlite&logoColor=white" alt="SQLite badge">
+  <img src="https://img.shields.io/badge/Interface-CLI-134074?style=for-the-badge&logo=windows-terminal&logoColor=white" alt="CLI badge">
+  <img src="https://img.shields.io/badge/Driver-sqlite--jdbc-1B4965?style=for-the-badge" alt="sqlite-jdbc badge">
+</p>
 
-- `WarehouseApp.java`: main application source
-- `community_robotic.db`: default SQLite database used by the app
-- `lib/sqlite-jdbc-3.36.0.jar`: SQLite JDBC driver
+```text
++------------------------------------------------------------------+
+| Community Robotics Management Console                            |
+| Java CLI for customers, robots, rentals, delivery, and reports   |
+| Powered by the community_robotic SQLite schema                   |
++------------------------------------------------------------------+
+```
 
-## Features
+## Overview
 
-- Add, edit, delete, search, and list customers from `Customer`
-- Add, edit, delete, search, and list robots across `Robot` and `Asset`
-- Record rentals in `Rental`
-- Return equipment by updating `Rental.returnDate`
-- Record delivery and pickup assignments in `Delivers`
-- Run summary reports for rentals, customers, robots, manufacturers, and driverless cars
-- Validate that the selected database matches the expected community schema before opening the menu
+| Area | What It Handles |
+| --- | --- |
+| Customer operations | Add, edit, delete, search, and list `Customer` records |
+| Robot operations | Manage `Robot` + `Asset` data, including status, warranty linkage, and asset metadata |
+| Rental workflow | Record checkouts, process returns, and keep rental state in `Rental` |
+| Delivery workflow | Attach delivery and pickup assignments through `Delivers` and `Driverless_Car` |
+| Reporting | Summarize rentals, popularity, usage, and customer activity |
+| Safety check | Validate the expected schema before the menu opens |
 
-## Database Tables Used
+## System Flow
 
-The app expects these community-schema tables:
+```mermaid
+flowchart LR
+    C[Customer] --> R[Rental]
+    R --> A[Asset]
+    A --> B[Robot]
+    R --> D[Delivers]
+    D --> DC[Driverless Car]
+    A --> W[Warranty]
+    A --> ORF[Order Request Facility]
+    A --> MM[Model Manufacturer]
+```
 
-- `Customer`
-- `Community_Facility`
-- `Asset`
-- `Robot`
-- `Rental`
-- `Driverless_Car`
-- `Delivers`
-- `Warranty`
-- `Order_Request_Facility`
-- `Model_Manufacturer`
+## Quick Start
 
-Notes about the model:
+### Requirements
 
-- Robot status, model, year, and order request live on `Asset`, not `Robot`.
-- Returning a rental sets `Rental.returnDate` and moves the robot asset back to `Available`.
-- Delivery and pickup assignments are both recorded in `Delivers`.
-- New robots must use a valid `model` + `year` + `orderRequestNum` combination that already exists in `Warranty`.
+| Dependency | Notes |
+| --- | --- |
+| Java JDK | Required to compile and run the app |
+| `lib/sqlite-jdbc-3.36.0.jar` | SQLite JDBC driver used by the application |
 
-## Requirements
-
-- Java JDK installed
-- SQLite JDBC jar in `lib/`
-
-## Compile
-
-From the project folder:
+### Compile
 
 ```bash
 javac WarehouseApp.java
 ```
 
-## Run
+### Run
 
 Use the default community database:
 
@@ -61,46 +67,74 @@ Use the default community database:
 java -cp ".:lib/sqlite-jdbc-3.36.0.jar" WarehouseApp
 ```
 
-Use a specific SQLite file that matches the same schema:
+Use a specific SQLite file with the same schema:
 
 ```bash
 java -cp ".:lib/sqlite-jdbc-3.36.0.jar" WarehouseApp /path/to/community_robotic.db
 ```
 
-You can also set an environment variable:
+Use an environment variable:
 
 ```bash
 export COMMUNITY_DB_PATH=/path/to/community_robotic.db
+java -cp ".:lib/sqlite-jdbc-3.36.0.jar" WarehouseApp
 ```
 
-If you want to suppress newer Java native-access warnings from the SQLite driver, use:
+Suppress newer Java native-access warnings from the SQLite driver:
 
 ```bash
 java --enable-native-access=ALL-UNNAMED -cp ".:lib/sqlite-jdbc-3.36.0.jar" WarehouseApp
 ```
 
-## Successful Database Connection
+## Console Preview
 
-When the application starts correctly, it prints a message like:
+```text
+=== Community Robotics Management System ===
+1) Manage Customers
+2) Manage Robots
+3) Rent Robots
+4) Return Equipment
+5) Record Delivery Assignment
+6) Record Pickup Assignment
+7) Reports
+8) Exit
+```
+
+## Project Layout
+
+| File | Purpose |
+| --- | --- |
+| `WarehouseApp.java` | Main application source |
+| `community_robotic.db` | Default SQLite database |
+| `lib/sqlite-jdbc-3.36.0.jar` | JDBC driver |
+
+## Core Tables
+
+| Table | Purpose |
+| --- | --- |
+| `Customer` | Customer records and facility assignment |
+| `Community_Facility` | Facility reference data |
+| `Asset` | Shared asset metadata such as status, year, model, and order request |
+| `Robot` | Robot-specific details |
+| `Rental` | Checkout, due, and return tracking |
+| `Driverless_Car` | Driverless delivery vehicle inventory |
+| `Delivers` | Delivery and pickup assignments |
+| `Warranty` | Valid model, year, and order request combinations |
+| `Order_Request_Facility` | Order request to facility mapping |
+| `Model_Manufacturer` | Manufacturer lookup for reporting |
+
+## Schema Notes
+
+- Robot status, model, year, and order request live on `Asset`, not `Robot`.
+- Returning a rental sets `Rental.returnDate` and moves the asset back to `Available`.
+- Delivery and pickup assignments are both recorded in `Delivers`.
+- New robots must use a valid `model` + `year` + `orderRequestNum` combination from `Warranty`.
+- The app validates the schema at startup instead of creating missing tables automatically.
+
+## Successful Startup
+
+When the application connects correctly, it prints:
 
 ```text
 Connected to SQLite database successfully: /full/path/to/community_robotic.db
 ```
-
-## Main Menu
-
-The program provides these options:
-
-1. Manage Customers
-2. Manage Robots
-3. Rent Robots
-4. Return Equipment
-5. Record Delivery Assignment
-6. Record Pickup Assignment
-7. Reports
-8. Exit
-
-## Notes
-
-- The default database file is `community_robotic.db`.
-- The app validates the schema at startup instead of creating missing tables automatically.
