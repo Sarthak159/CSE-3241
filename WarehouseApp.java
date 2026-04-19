@@ -105,7 +105,8 @@ public class WarehouseApp {
                     case 4 -> returnEquipment(in);
                     case 5 -> deliverRobot(in);
                     case 6 -> pickupRobot(in);
-                    case 7 -> {
+                    case 7 -> reportsMenu(in);
+                    case 8 -> {
                         running = false;
                         System.out.println("Exiting program. Goodbye.");
                     }
@@ -360,7 +361,8 @@ public class WarehouseApp {
         System.out.println("4) Return Equipment");
         System.out.println("5) Record Delivery Assignment");
         System.out.println("6) Record Pickup Assignment");
-        System.out.println("7) Exit");
+        System.out.println("7) Reports");
+        System.out.println("8) Exit");
     }
 
     private static void customerMenu(Scanner in) {
@@ -1103,6 +1105,229 @@ public class WarehouseApp {
                 stmt -> stmt.setInt(1, serialNum));
     }
 
+
+    private static void reportsMenu(Scanner in) {
+        boolean back = false;
+        while (!back) {
+            System.out.println("\n--- Reports Menu ---");
+            System.out.println("1) Renting checkouts by customer");
+            System.out.println("2) Most popular robot");
+            System.out.println("3) Most popular manufacturer");
+            System.out.println("4) Most used driverless car");
+            System.out.println("5) Customer with most robot rentals");
+            System.out.println("6) Robots by type released before year");
+            System.out.println("7) Back");
+
+            int choice = readInt(in, "Choose an option: ");
+
+            switch (choice) {
+                case 1 -> reportRentingCheckouts(in);
+                case 2 -> reportPopularRobot();
+                case 3 -> reportPopularManufacturer();
+                case 4 -> reportPopularDriverlessCar();
+                case 5 -> reportTopRobotCustomer();
+                case 6 -> reportRobotsByTypeBeforeYear(in);
+                case 7 -> back = true;
+                default -> System.out.println("Invalid option. Try again.");
+            }
+        }
+    }
+
+    private static void reportRentingCheckouts(Scanner in) {
+        System.out.println("\n--- Renting Checkouts by Customer ---");
+        int customerId = readInt(in, "Customer ID: ");
+
+        runWithConnection("run renting checkouts report", conn -> {
+            Customer customer = findCustomerById(conn, customerId);
+            if (customer == null) {
+                System.out.println("Customer not found.");
+                return;
+            }
+
+            Integer totalRentals = queryOne(
+                    conn,
+                    "SELECT COUNT(*) AS totalRentals FROM Rental WHERE customerID = ?",
+                    rs -> rs.getInt("totalRentals"),
+                    stmt -> stmt.setInt(1, customerId)
+            );
+
+            System.out.println(
+                    "Customer " + customer.firstName() + " " + customer.lastName() +
+                            " (ID " + customerId + ") has rented " +
+                            (totalRentals == null ? 0 : totalRentals) + " item(s)."
+            );
+        });
+    }
+
+    private static void reportPopularRobot() {
+        System.out.println("\n--- Most Popular Robot ---");
+
+        runWithConnection("run popular robot report", conn -> {
+            PopularRobotReport report = queryOne(
+                    conn,
+                    "SELECT r.serialNum, r.name, COUNT(rt.rentalID) AS rentalCount, " +
+                            "SUM(CASE WHEN rt.returnDate IS NOT NULL THEN " +
+                            "julianday(rt.returnDate) - julianday(rt.checkoutDate) ELSE 0 END) AS totalDays " +
+                            "FROM Robot r " +
+                            "LEFT JOIN Rental rt ON rt.assetNum = r.serialNum " +
+                            "GROUP BY r.serialNum, r.name " +
+                            "ORDER BY rentalCount DESC, totalDays DESC, r.serialNum ASC " +
+                            "LIMIT 1",
+                    rs -> new PopularRobotReport(
+                            rs.getInt("serialNum"),
+                            rs.getString("name"),
+                            rs.getInt("rentalCount"),
+                            rs.getDouble("totalDays")
+                    ),
+                    null
+            );
+
+            if (report == null) {
+                System.out.println("No robot rental data found.");
+                return;
+            }
+
+            System.out.println(
+                    "Most popular robot: " + report.name() +
+                            " (Serial " + report.serialNum() + ")" +
+                            ", rentals=" + report.rentalCount() +
+                            ", total completed rental days=" + String.format(Locale.ROOT, "%.2f", report.totalDays())
+            );
+        });
+    }
+
+    private static void reportPopularManufacturer() {
+        System.out.println("\n--- Most Popular Manufacturer ---");
+
+        runWithConnection("run popular manufacturer report", conn -> {
+            PopularManufacturerReport report = queryOne(
+                    conn,
+                    "SELECT mm.manufacturer, COUNT(rt.rentalID) AS rentalCount " +
+                            "FROM Model_Manufacturer mm " +
+                            "JOIN Asset a ON a.model = mm.model " +
+                            "LEFT JOIN Rental rt ON rt.assetNum = a.serialNum " +
+                            "GROUP BY mm.manufacturer " +
+                            "ORDER BY rentalCount DESC, mm.manufacturer ASC " +
+                            "LIMIT 1",
+                    rs -> new PopularManufacturerReport(
+                            rs.getString("manufacturer"),
+                            rs.getInt("rentalCount")
+                    ),
+                    null
+            );
+
+            if (report == null) {
+                System.out.println("No manufacturer rental data found.");
+                return;
+            }
+
+            System.out.println(
+                    "Most popular manufacturer: " + report.manufacturer() +
+                            ", rentals=" + report.rentalCount()
+            );
+        });
+    }
+
+    private static void reportPopularDriverlessCar() {
+        System.out.println("\n--- Most Used Driverless Car ---");
+
+        runWithConnection("run popular driverless car report", conn -> {
+            PopularDriverlessCarReport report = queryOne(
+                    conn,
+                    "SELECT dc.serialNum, dc.licensePlate, COUNT(d.rentalID) AS deliveryCount " +
+                            "FROM Driverless_Car dc " +
+                            "LEFT JOIN Delivers d ON d.carNum = dc.serialNum " +
+                            "GROUP BY dc.serialNum, dc.licensePlate " +
+                            "ORDER BY deliveryCount DESC, dc.serialNum ASC " +
+                            "LIMIT 1",
+                    rs -> new PopularDriverlessCarReport(
+                            rs.getInt("serialNum"),
+                            rs.getString("licensePlate"),
+                            rs.getInt("deliveryCount")
+                    ),
+                    null
+            );
+
+            if (report == null) {
+                System.out.println("No driverless car usage data found.");
+                return;
+            }
+
+            System.out.println(
+                    "Most used driverless car: serial " + report.serialNum() +
+                            ", plate=" + report.licensePlate() +
+                            ", deliveries=" + report.deliveryCount()
+            );
+        });
+    }
+
+    private static void reportTopRobotCustomer() {
+        System.out.println("\n--- Customer With Most Robot Rentals ---");
+
+        runWithConnection("run top robot customer report", conn -> {
+            TopCustomerReport report = queryOne(
+                    conn,
+                    "SELECT c.customerID, c.firstName, c.lastName, COUNT(rt.rentalID) AS rentalCount " +
+                            "FROM Customer c " +
+                            "LEFT JOIN Rental rt ON rt.customerID = c.customerID " +
+                            "LEFT JOIN Robot r ON r.serialNum = rt.assetNum " +
+                            "WHERE r.serialNum IS NOT NULL " +
+                            "GROUP BY c.customerID, c.firstName, c.lastName " +
+                            "ORDER BY rentalCount DESC, c.customerID ASC " +
+                            "LIMIT 1",
+                    rs -> new TopCustomerReport(
+                            rs.getInt("customerID"),
+                            rs.getString("firstName"),
+                            rs.getString("lastName"),
+                            rs.getInt("rentalCount")
+                    ),
+                    null
+            );
+
+            if (report == null) {
+                System.out.println("No robot rental data found.");
+                return;
+            }
+
+            System.out.println(
+                    "Top robot customer: " + report.firstName() + " " + report.lastName() +
+                            " (ID " + report.customerId() + ")" +
+                            ", robot rentals=" + report.rentalCount()
+            );
+        });
+    }
+
+    private static void reportRobotsByTypeBeforeYear(Scanner in) {
+        System.out.println("\n--- Robots By Type Released Before Year ---");
+        String robotType = readRequiredLine(in, "Primary function/type: ").toLowerCase(Locale.ROOT);
+        int year = readInt(in, "Released before year: ");
+
+        runWithConnection("run robots by type before year report", conn -> {
+            String pattern = "%" + robotType + "%";
+            if (!printQueryResults(
+                    conn,
+                    "SELECT r.serialNum, r.name, r.primaryFunction, a.year, a.model " +
+                            "FROM Robot r " +
+                            "JOIN Asset a ON a.serialNum = r.serialNum " +
+                            "WHERE LOWER(r.primaryFunction) LIKE ? AND a.year < ? " +
+                            "ORDER BY a.year ASC, r.serialNum ASC",
+                    stmt -> {
+                        stmt.setString(1, pattern);
+                        stmt.setInt(2, year);
+                    },
+                    rs -> "Robot{serial=" + rs.getInt("serialNum") +
+                            ", name='" + rs.getString("name") + "'" +
+                            ", function='" + rs.getString("primaryFunction") + "'" +
+                            ", year=" + rs.getInt("year") +
+                            ", model='" + rs.getString("model") + "'}",
+                    "Matching robots:",
+                    " - "
+            )) {
+                System.out.println("No robots matched that type and year.");
+            }
+        });
+    }
+
     private static void rollbackQuietly(Connection conn) {
         try {
             conn.rollback();
@@ -1389,6 +1614,36 @@ public class WarehouseApp {
                     ", year=" + year +
                     ", orderRequest=" + orderRequestNum + "}";
         }
+    }
+
+
+    private record PopularRobotReport(
+            int serialNum,
+            String name,
+            int rentalCount,
+            double totalDays
+    ) {
+    }
+
+    private record PopularManufacturerReport(
+            String manufacturer,
+            int rentalCount
+    ) {
+    }
+
+    private record PopularDriverlessCarReport(
+            int serialNum,
+            String licensePlate,
+            int deliveryCount
+    ) {
+    }
+
+    private record TopCustomerReport(
+            int customerId,
+            String firstName,
+            String lastName,
+            int rentalCount
+    ) {
     }
 
     private record ReferenceSelection(Integer robotId, Integer rentalId) {
