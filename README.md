@@ -1,7 +1,7 @@
 <h1 align="center">Community Robotics Management Console</h1>
 
 <p align="center">
-  A Java console application for managing customers, robots, rentals, returns, delivery assignments, and reports on top of the <code>community_robotic.db</code> schema.
+  A Java console application for managing customers, robots, rentals, returns, delivery assignments, and reports on top of the <code>rentalHomeRobotDatabase.db</code> schema.
 </p>
 
 <p align="center">
