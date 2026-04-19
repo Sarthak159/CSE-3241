@@ -6,7 +6,6 @@ A Java console application for managing customers, robots, rentals, returns, and
 
 - `WarehouseApp.java`: main application source
 - `community_robotic.db`: default SQLite database used by the app
-- `Warehouse.db`: older warehouse-style database kept in the repo, but no longer the default target
 - `lib/sqlite-jdbc-3.36.0.jar`: SQLite JDBC driver
 
 ## Features
@@ -16,6 +15,7 @@ A Java console application for managing customers, robots, rentals, returns, and
 - Record rentals in `Rental`
 - Return equipment by updating `Rental.returnDate`
 - Record delivery and pickup assignments in `Delivers`
+- Run summary reports for rentals, customers, robots, manufacturers, and driverless cars
 - Validate that the selected database matches the expected community schema before opening the menu
 
 ## Database Tables Used
@@ -31,6 +31,7 @@ The app expects these community-schema tables:
 - `Delivers`
 - `Warranty`
 - `Order_Request_Facility`
+- `Model_Manufacturer`
 
 Notes about the model:
 
@@ -72,8 +73,6 @@ You can also set an environment variable:
 export COMMUNITY_DB_PATH=/path/to/community_robotic.db
 ```
 
-The app still accepts the older `WAREHOUSE_DB_PATH` variable as a fallback.
-
 If you want to suppress newer Java native-access warnings from the SQLite driver, use:
 
 ```bash
@@ -98,11 +97,10 @@ The program provides these options:
 4. Return Equipment
 5. Record Delivery Assignment
 6. Record Pickup Assignment
-7. Exit
+7. Reports
+8. Exit
 
 ## Notes
 
 - The default database file is `community_robotic.db`.
-- `Warehouse.db` is no longer the expected schema for current app behavior.
 - The app validates the schema at startup instead of creating missing tables automatically.
-- If warehouse-era `EQUIPMENT_RETURN`, `DELIVERY`, or `PICKUP` tables are present in the selected community database, the app removes those legacy leftovers on startup because their foreign keys conflict with the community schema.

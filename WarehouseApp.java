@@ -16,7 +16,6 @@ import java.util.Set;
 public class WarehouseApp {
 
     private static final String DEFAULT_DATABASE_NAME = "community_robotic.db";
-    private static final String LEGACY_ENV_DATABASE_PATH = "WAREHOUSE_DB_PATH";
     private static final String COMMUNITY_ENV_DATABASE_PATH = "COMMUNITY_DB_PATH";
     private static final String SQLITE_DRIVER = "org.sqlite.JDBC";
     private static final String STATUS_AVAILABLE = "Available";
@@ -44,7 +43,7 @@ public class WarehouseApp {
                     "a.status, a.year, a.model, a.orderRequestNum " +
                     "FROM Driverless_Car dc " +
                     "JOIN Asset a ON a.serialNum = dc.serialNum";
-    private static final Set<String> DYNAMIC_TABLES = Set.of(
+    private static final Set<String> SCHEMA_TABLES = Set.of(
             "Customer",
             "Community_Facility",
             "Asset",
@@ -54,9 +53,7 @@ public class WarehouseApp {
             "Delivers",
             "Warranty",
             "Order_Request_Facility",
-            "EQUIPMENT_RETURN",
-            "DELIVERY",
-            "PICKUP"
+            "Model_Manufacturer"
     );
 
     private static Path databasePath;
@@ -127,7 +124,6 @@ public class WarehouseApp {
         }
 
         try (Connection conn = getConnection()) {
-            removeLegacyWarehouseTables(conn);
             validateCommunitySchema(conn);
         }
     }
@@ -157,11 +153,6 @@ public class WarehouseApp {
             return Paths.get(envPath).toAbsolutePath().normalize();
         }
 
-        String legacyEnvPath = System.getenv(LEGACY_ENV_DATABASE_PATH);
-        if (legacyEnvPath != null && !legacyEnvPath.isBlank()) {
-            return Paths.get(legacyEnvPath).toAbsolutePath().normalize();
-        }
-
         return Paths.get(DEFAULT_DATABASE_NAME).toAbsolutePath().normalize();
     }
 
@@ -180,42 +171,7 @@ public class WarehouseApp {
         validateTableColumns(conn, "Delivers", "carNum", "rentalID", "deliveryType");
         validateTableColumns(conn, "Warranty", "model", "year", "orderRequestNum", "warrantyExpiration");
         validateTableColumns(conn, "Order_Request_Facility", "orderRequestNum", "facilityID");
-    }
-
-    private static void removeLegacyWarehouseTables(Connection conn) throws SQLException {
-        dropLegacyWarehouseTableIfPresent(
-                conn,
-                "EQUIPMENT_RETURN",
-                "return_id", "rental_id", "customer_id", "robot_id", "return_date"
-        );
-        dropLegacyWarehouseTableIfPresent(
-                conn,
-                "DELIVERY",
-                "delivery_id", "customer_id", "robot_id", "rental_id", "driverless_car_id", "delivery_date", "destination"
-        );
-        dropLegacyWarehouseTableIfPresent(
-                conn,
-                "PICKUP",
-                "pickup_id", "customer_id", "robot_id", "rental_id", "driverless_car_id", "pickup_date", "pickup_address"
-        );
-    }
-
-    private static void dropLegacyWarehouseTableIfPresent(Connection conn, String tableName, String... legacyColumns)
-            throws SQLException {
-        List<String> actualColumns = getTableColumns(conn, tableName);
-        if (actualColumns.isEmpty()) {
-            return;
-        }
-
-        for (String legacyColumn : legacyColumns) {
-            if (!containsIgnoreCase(actualColumns, legacyColumn)) {
-                return;
-            }
-        }
-
-        try (Statement stmt = conn.createStatement()) {
-            stmt.executeUpdate("DROP TABLE IF EXISTS " + quotedTableName(tableName));
-        }
+        validateTableColumns(conn, "Model_Manufacturer", "model", "manufacturer");
     }
 
     private static void validateTableColumns(Connection conn, String tableName, String... requiredColumns)
@@ -257,7 +213,7 @@ public class WarehouseApp {
     }
 
     private static String quotedTableName(String tableName) throws SQLException {
-        if (!DYNAMIC_TABLES.contains(tableName)) {
+        if (!SCHEMA_TABLES.contains(tableName)) {
             throw new SQLException("Unexpected table reference: " + tableName);
         }
         return "\"" + tableName + "\"";
