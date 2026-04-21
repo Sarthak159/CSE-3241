@@ -15,7 +15,7 @@ import java.util.Set;
 
 public class WarehouseApp {
 
-    private static final String DEFAULT_DATABASE_NAME = "community_robotic.db";
+    private static final String DEFAULT_DATABASE_NAME = "rentalHomeRobotDatabase.db";
     private static final String COMMUNITY_ENV_DATABASE_PATH = "COMMUNITY_DB_PATH";
     private static final String SQLITE_DRIVER = "org.sqlite.JDBC";
     private static final String STATUS_AVAILABLE = "Available";
